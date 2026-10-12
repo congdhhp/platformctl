@@ -1,0 +1,14 @@
+[Unit]
+Description=softA native service
+After=network.target
+
+[Service]
+Type=simple
+User=softa
+Group=softa
+ExecStart=/opt/platform/softA/current/bin/softA
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
