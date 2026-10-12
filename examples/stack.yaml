@@ -1,0 +1,23 @@
+schema: 1
+
+platform:
+  root: /opt/platform
+
+services:
+  softA:
+    version: 2.5.5-build184
+    unit: softA.service
+    state: running
+    autostart: true
+
+  softB:
+    version: 3.1.0-build73
+    unit: softB.service
+    state: running
+    autostart: true
+
+  softC:
+    version: 1.8.7-build52
+    unit: softC.service
+    state: running
+    autostart: true
