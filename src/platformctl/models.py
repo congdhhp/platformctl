@@ -35,8 +35,9 @@ class ServiceSpec:
         return self.root
 
     @property
-    def releases_dir(self) -> Path:
-        return self._managed_root() / "releases"
+    def version_root(self) -> Path:
+        """Direct parent of immutable version directories in managed mode."""
+        return self._managed_root()
 
     @property
     def current_link(self) -> Path:
