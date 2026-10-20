@@ -126,12 +126,12 @@ def test_external_rollback_rejected_before_stopping_service(tmp_path: Path):
     assert systemd.calls == []
 
 
-def test_legacy_symlink_is_rejected_before_stopping_unit(tmp_path: Path):
+def test_invalid_symlink_is_rejected_before_stopping_unit(tmp_path: Path):
     root = tmp_path / "softA"
     (root / "1.1.0").mkdir(parents=True)
-    old = root / "releases" / "1.0.0"
-    old.mkdir(parents=True)
-    (root / "current").symlink_to(old)
+    outside = tmp_path / "outside" / "1.0.0"
+    outside.mkdir(parents=True)
+    (root / "current").symlink_to(outside)
     spec = ServiceSpec(name="softA", version="1.1.0", unit="softA.service", root=root)
     systemd = FakeSystemd()
     systemd.active.add(spec.unit)
