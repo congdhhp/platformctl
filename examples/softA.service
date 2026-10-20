@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=softa
 Group=softa
-ExecStart=/opt/platform/softA/current/bin/softA
+ExecStart=/opt/softA/current/bin/softA
 Restart=on-failure
 RestartSec=2
 
