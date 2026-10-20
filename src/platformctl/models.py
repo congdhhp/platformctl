@@ -13,11 +13,12 @@ ServiceState = Literal["running", "stopped"]
 class ServiceSpec:
     name: str
     version: str
-    unit: str
+    service_name: str
     root: Path | None
     state: ServiceState = "running"
     autostart: bool = True
     install_path: Path | None = None
+    service_file: Path | None = None
 
     def __post_init__(self) -> None:
         if (self.root is None) == (self.install_path is None):
