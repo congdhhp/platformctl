@@ -126,3 +126,23 @@ def rollback_link(spec: ServiceSpec) -> tuple[str | None, str]:
     old = current_version(spec)
     activate(spec, previous)
     return old, previous
+
+
+def snapshot_links(spec: ServiceSpec) -> tuple[str | None, str | None]:
+    """Record the exact targets, including missing links, before an apply."""
+    if not spec.managed:
+        raise ReleaseError(f"{spec.name} uses install_path; no managed links available")
+    validate_managed_links(spec)
+    return tuple(
+        os.readlink(link) if link.is_symlink() else None
+        for link in (spec.current_link, spec.previous_link)
+    )
+
+
+def restore_links(spec: ServiceSpec, snapshot: tuple[str | None, str | None]) -> None:
+    """Restore current and previous to their pre-apply state."""
+    for link, original in zip((spec.current_link, spec.previous_link), snapshot):
+        if original is None:
+            link.unlink(missing_ok=True)
+        else:
+            _replace_symlink(link, Path(original))
