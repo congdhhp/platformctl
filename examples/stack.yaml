@@ -8,20 +8,21 @@ services:
   softA:
     version: 2.5.5-build184
     root: /opt/softA
-    unit: softA.service
+    service_name: softA.service
+    service_file: ./softA.service
     state: running
     autostart: true
 
   # Default flat layout: /opt/platform/softB/3.1.0-build73
   softB:
     version: 3.1.0-build73
-    unit: softB.service
+    service_name: softB.service
     state: running
     autostart: true
 
   softC:
     version: 1.8.7-build52
-    unit: softC.service
+    service_name: softC.service
     state: running
     autostart: true
 
@@ -30,6 +31,6 @@ services:
   legacyApp:
     version: 3.1.0
     install_path: /opt/vendor/legacyApp
-    unit: legacyApp.service
+    service_name: legacyApp.service
     state: running
     autostart: true
