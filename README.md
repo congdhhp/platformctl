@@ -40,6 +40,51 @@ services:
 
 `enabled: true|false` is also supported as a shorthand for the common combination of runtime state and boot autostart.
 
+### Installation locations: managed or external
+
+The default **managed** layout for each service is `<platform.root>/<service>/` with
+`releases/<version>/`, `current`, and `previous`. Override only the root when a
+service needs a different managed location:
+
+```yaml
+services:
+  softA:
+    version: 2.5.5-build184
+    root: /srv/native/softA
+    unit: softA.service
+```
+
+For a **pre-existing external/legacy installation** without versioned releases, use
+`install_path` instead:
+
+```yaml
+services:
+  legacyApp:
+    version: 3.1.0
+    install_path: /opt/vendor/legacyApp
+    unit: legacyApp.service
+    state: running
+    autostart: true
+```
+
+`root` and `install_path` are mutually exclusive. `install_path` must be an
+absolute path to an existing directory. In external mode:
+
+- `validate` checks the installation directory exists.
+- `apply` **only** reconciles systemd start/stop and boot enablement; it does
+  not install files, replace symlinks, change executables or switch versions.
+- `version` is **declared metadata only**: `status` displays the current
+  version as `unknown` and `diff` notes that version drift cannot be verified.
+- `rollback` and `list-releases` explicitly reject external installations.
+- The existing systemd unit **must already point to the correct executable**
+  in the external location. `platformctl` does not inspect or rewrite
+  `ExecStart`, and it cannot prove the running process uses `install_path`.
+  Version verification and rollback require a separate integration/strategy.
+
+Do not put `releases` paths in the manifest. That is an internal layout used only
+for managed installations.
+
+
 ## Commands
 
 ```bash
@@ -81,4 +126,4 @@ pytest
 
 ## MVP limitations
 
-The first version intentionally does not include Nexus downloads, health-check plugins, dependency ordering between services, transactional all-or-nothing rollback across a whole stack, or a privileged daemon/API. Those can be layered on later without changing the release layout.
+External installations do not support version verification, switching, or rollback. The first version intentionally does not include Nexus downloads, health-check plugins, dependency ordering between services, transactional all-or-nothing rollback across a whole stack, or a privileged daemon/API. Those can be layered on later without changing the release layout.
