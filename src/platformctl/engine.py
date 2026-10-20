@@ -4,7 +4,13 @@ from dataclasses import dataclass
 
 from .errors import ApplyError, ReleaseError
 from .models import ServiceSpec, StackManifest
-from .release import activate, current_version, ensure_release_exists, rollback_link
+from .release import (
+    activate,
+    current_version,
+    ensure_release_exists,
+    rollback_link,
+    validate_managed_links,
+)
 from .systemd import Systemd
 
 
@@ -26,6 +32,7 @@ class Engine:
         for spec in manifest.services.values():
             if spec.managed:
                 ensure_release_exists(spec)
+                validate_managed_links(spec)
             elif spec.install_path is None or not spec.install_path.is_dir():
                 raise ReleaseError(f"installation directory not found: {spec.install_path}")
 
@@ -78,6 +85,7 @@ class Engine:
             return None, spec.version
 
         ensure_release_exists(spec)
+        validate_managed_links(spec)
         old_version = current_version(spec)
         was_active = self.systemd.is_active(spec.unit)
         changed = old_version != spec.version
@@ -140,6 +148,7 @@ class Engine:
     def rollback(self, spec: ServiceSpec) -> tuple[str | None, str]:
         if not spec.managed:
             raise ReleaseError(f"{spec.name} uses install_path; rollback is unavailable")
+        validate_managed_links(spec)
         was_active = self.systemd.is_active(spec.unit)
         if was_active:
             self.systemd.stop(spec.unit)
