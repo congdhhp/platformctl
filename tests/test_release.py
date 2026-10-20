@@ -1,7 +1,8 @@
 from pathlib import Path
 
-from platformctl.models import ServiceSpec
 import pytest
+
+from platformctl.models import ServiceSpec
 
 from platformctl.errors import ReleaseError
 from platformctl.release import (
@@ -53,9 +54,8 @@ def test_external_has_no_managed_release(tmp_path: Path):
         rollback_link(s)
 
 
-def test_flat_list_ignores_links_and_old_releases_directory(tmp_path: Path):
+def test_flat_list_ignores_symlinks_and_non_version_paths(tmp_path: Path):
     s = spec(tmp_path)
-    (s.root / "releases").mkdir()
     (s.root / ".staging").mkdir()
     (s.root / "notes.txt").write_text("not a version")
     activate(s, "1.0.0")
@@ -63,25 +63,25 @@ def test_flat_list_ignores_links_and_old_releases_directory(tmp_path: Path):
     assert list_deployed_releases(s) == ["1.0.0", "1.1.0"]
 
 
-def test_refuse_legacy_nested_current_symlink(tmp_path: Path):
+def test_refuse_current_symlink_pointing_to_nested_directory(tmp_path: Path):
     s = spec(tmp_path)
-    old = s.root / "releases" / "1.0.0"
-    old.mkdir(parents=True)
-    s.current_link.symlink_to(old)
+    nested = s.root / ".staging" / "1.0.0"
+    nested.mkdir(parents=True)
+    s.current_link.symlink_to(nested)
     assert current_version(s) is None
     with pytest.raises(ReleaseError, match="invalid current symlink"):
         validate_managed_links(s)
     with pytest.raises(ReleaseError, match="invalid current symlink"):
         activate(s, "1.1.0")
-    assert s.current_link.resolve() == old
+    assert s.current_link.resolve() == nested
 
 
-def test_refuse_legacy_nested_previous_symlink(tmp_path: Path):
+def test_refuse_previous_symlink_pointing_outside_root(tmp_path: Path):
     s = spec(tmp_path)
     (s.root / "current").symlink_to(s.root / "1.0.0")
-    old = s.root / "releases" / "1.1.0"
-    old.mkdir(parents=True)
-    s.previous_link.symlink_to(old)
+    outside = tmp_path / "external" / "1.1.0"
+    outside.mkdir(parents=True)
+    s.previous_link.symlink_to(outside)
     with pytest.raises(ReleaseError, match="invalid previous symlink"):
         activate(s, "1.1.0")
     assert current_version(s) == "1.0.0"
@@ -95,7 +95,7 @@ def test_refuse_release_directory_symlink(tmp_path: Path):
     assert "1.2.0" not in list_deployed_releases(s)
 
 
-@pytest.mark.parametrize("reserved", ["current", "previous", "releases"])
+@pytest.mark.parametrize("reserved", ["current", "previous"])
 def test_refuse_reserved_version_directories(tmp_path: Path, reserved: str):
     s = spec(tmp_path)
     with pytest.raises(ReleaseError, match="invalid managed release version"):
