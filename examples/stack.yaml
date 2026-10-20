@@ -21,3 +21,12 @@ services:
     unit: softC.service
     state: running
     autostart: true
+
+  # Existing vendor installation: platformctl controls only systemd state.
+  # No symlink updates, version switching or rollback for this service.
+  legacyApp:
+    version: 3.1.0
+    install_path: /opt/vendor/legacyApp
+    unit: legacyApp.service
+    state: running
+    autostart: true
