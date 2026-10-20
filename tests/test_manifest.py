@@ -92,3 +92,14 @@ def test_reject_invalid_install_path(tmp_path: Path, extra: str):
     )
     with pytest.raises(ManifestError):
         load_manifest(p)
+
+
+@pytest.mark.parametrize("reserved", ["current", "previous", "releases"])
+def test_reject_reserved_managed_versions(tmp_path: Path, reserved: str):
+    p = tmp_path / "stack.yaml"
+    p.write_text(
+        f"schema: 1\nservices:\n  softA:\n    version: {reserved}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ManifestError, match="conflicts with a managed directory name"):
+        load_manifest(p)
