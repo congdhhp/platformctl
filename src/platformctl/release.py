@@ -8,7 +8,7 @@ from .errors import ReleaseError
 from .models import ServiceSpec
 
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+~-]*$")
-_RESERVED_NAMES = frozenset({"current", "previous", "releases"})
+_RESERVED_NAMES = frozenset({"current", "previous"})
 
 
 def is_version_name(name: str) -> bool:
@@ -59,7 +59,7 @@ def previous_version(spec: ServiceSpec) -> str | None:
 
 
 def validate_managed_links(spec: ServiceSpec) -> None:
-    """Refuse to overwrite links from the previous releases/ layout or unsafe paths."""
+    """Require controller symlinks to target a direct managed version directory."""
     if not spec.managed:
         return
     for label, link in (
@@ -70,7 +70,7 @@ def validate_managed_links(spec: ServiceSpec) -> None:
             if _linked_version(spec, link) is None:
                 raise ReleaseError(
                     f"invalid {label} symlink: {link}; "
-                    "migrate the release layout and relink it before applying"
+                    "expected a direct version directory under the service root"
                 )
         elif link.exists():
             raise ReleaseError(f"{label} must be a symlink: {link}")
