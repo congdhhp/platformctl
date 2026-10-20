@@ -8,6 +8,7 @@ from platformctl.models import StackManifest
 from platformctl.engine import Engine
 from platformctl.models import ServiceSpec
 from platformctl.release import current_version
+from platformctl.unit_files import UnitFileManager
 
 
 class FakeSystemd:
@@ -15,6 +16,9 @@ class FakeSystemd:
         self.active = set()
         self.enabled = set()
         self.calls = []
+
+    def daemon_reload(self):
+        self.calls.append(("daemon-reload",))
 
     def is_active(self, unit):
         return unit in self.active
@@ -48,7 +52,7 @@ def test_apply_switches_release_and_starts_service(tmp_path: Path):
     (root / "1.0.0").mkdir(parents=True)
     (root / "1.1.0").mkdir(parents=True)
     (root / "current").symlink_to(root / "1.0.0")
-    spec = ServiceSpec(name="softA", version="1.1.0", unit="softA.service", root=root)
+    spec = ServiceSpec(name="softA", version="1.1.0", service_name="softA.service", root=root)
 
     systemd = FakeSystemd()
     systemd.active.add("softA.service")
@@ -64,15 +68,15 @@ def test_external_apply_reconciles_systemd_only(tmp_path: Path):
     install = tmp_path / "vendor" / "softA"
     install.mkdir(parents=True)
     spec = ServiceSpec(
-        name="softA", version="1.2.3", unit="softA.service",
+        name="softA", version="1.2.3", service_name="softA.service",
         root=None, install_path=install
     )
     systemd = FakeSystemd()
-    systemd.active.add(spec.unit)
+    systemd.active.add(spec.service_name)
     engine = Engine(systemd=systemd)
 
     assert engine.apply_service(spec) == (None, "1.2.3")
-    assert ("enable", spec.unit) in systemd.calls
+    assert ("enable", spec.service_name) in systemd.calls
     assert all(call[0] not in {"stop", "start", "restart"} for call in systemd.calls)
     assert list(install.iterdir()) == []  # Never create or switch symlinks.
 
@@ -87,22 +91,22 @@ def test_external_apply_stops_service(tmp_path: Path):
     install = tmp_path / "legacy"
     install.mkdir()
     spec = ServiceSpec(
-        name="legacy", version="1.2.3", unit="legacy.service",
+        name="legacy", version="1.2.3", service_name="legacy.service",
         root=None, install_path=install, state="stopped", autostart=False,
     )
     systemd = FakeSystemd()
-    systemd.active.add(spec.unit)
+    systemd.active.add(spec.service_name)
     engine = Engine(systemd=systemd)
     engine.apply_service(spec)
 
-    assert ("stop", spec.unit) in systemd.calls
-    assert ("disable", spec.unit) in systemd.calls
-    assert not systemd.is_active(spec.unit)
+    assert ("stop", spec.service_name) in systemd.calls
+    assert ("disable", spec.service_name) in systemd.calls
+    assert not systemd.is_active(spec.service_name)
 
 
 def test_external_validate_requires_existing_directory(tmp_path: Path):
     spec = ServiceSpec(
-        name="legacy", version="1.0.0", unit="legacy.service",
+        name="legacy", version="1.0.0", service_name="legacy.service",
         root=None, install_path=tmp_path / "missing",
     )
     manifest = StackManifest(
@@ -116,11 +120,11 @@ def test_external_rollback_rejected_before_stopping_service(tmp_path: Path):
     install = tmp_path / "legacy"
     install.mkdir()
     spec = ServiceSpec(
-        name="legacy", version="1.2.3", unit="legacy.service",
+        name="legacy", version="1.2.3", service_name="legacy.service",
         root=None, install_path=install,
     )
     systemd = FakeSystemd()
-    systemd.active.add(spec.unit)
+    systemd.active.add(spec.service_name)
     with pytest.raises(ReleaseError, match="rollback is unavailable"):
         Engine(systemd=systemd).rollback(spec)
     assert systemd.calls == []
@@ -132,14 +136,14 @@ def test_invalid_symlink_is_rejected_before_stopping_unit(tmp_path: Path):
     outside = tmp_path / "outside" / "1.0.0"
     outside.mkdir(parents=True)
     (root / "current").symlink_to(outside)
-    spec = ServiceSpec(name="softA", version="1.1.0", unit="softA.service", root=root)
+    spec = ServiceSpec(name="softA", version="1.1.0", service_name="softA.service", root=root)
     systemd = FakeSystemd()
-    systemd.active.add(spec.unit)
+    systemd.active.add(spec.service_name)
     engine = Engine(systemd=systemd)
 
     with pytest.raises(ReleaseError, match="invalid current symlink"):
         engine.apply_service(spec)
-    assert systemd.is_active(spec.unit)
+    assert systemd.is_active(spec.service_name)
     assert not systemd.calls
 
 
@@ -148,7 +152,7 @@ def test_validate_accepts_flat_directory(tmp_path: Path):
     (root / "2.5.5-build184").mkdir(parents=True)
     spec = ServiceSpec(
         name="softA", version="2.5.5-build184",
-        unit="softA.service", root=root,
+        service_name="softA.service", root=root,
     )
     Engine(systemd=FakeSystemd()).validate(
         StackManifest(schema=1, platform_root=tmp_path, services={"softA": spec})
