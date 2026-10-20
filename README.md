@@ -22,7 +22,7 @@ Managed installations use **`<root>/<version>/`** directly:
 └── previous -> 2.5.4-build178/
 ```
 
-The systemd unit must execute via the stable `current` symlink:
+A managed systemd unit should execute via the stable `current` symlink:
 
 ```ini
 ExecStart=/opt/softA/current/bin/softA
@@ -44,13 +44,14 @@ services:
   softA:
     version: 2.5.5-build184
     root: /opt/softA
-    unit: softA.service
+    service_name: softA.service
+    service_file: ./examples/softA.service
     state: running
     autostart: true
 
   softB:
     version: 3.1.0-build73
-    unit: softB.service
+    service_name: softB.service
     state: running
     autostart: true
 ```
@@ -63,6 +64,48 @@ With no service-level `root`, the managed root defaults to
 `enabled: true|false` is also supported as a shorthand for the common
 combination of runtime state and boot autostart.
 
+## Optional systemd service file
+
+`service_name` replaces the former `unit` field. It defaults to
+`<service>.service`, for example `controller.service`. The old `unit`
+field is not accepted.
+
+`service_file` is optional. It points to a **complete** systemd `.service`
+file, resolved relative to the directory containing `stack.yaml`:
+
+```yaml
+services:
+  controller:
+    version: 2.5.5-build184
+    root: /opt/ControllerSoftware
+    service_name: controller.service
+    service_file: ./services/controller.service
+```
+
+If omitted, platformctl leaves the installed unit file untouched and controls
+its runtime state only. If present, `validate` checks the source file,
+`diff` reports changes, and `apply` copies the file to
+`/etc/systemd/system/<service_name>` when its bytes differ. It then issues
+`systemctl daemon-reload` and restarts an already-running service, even if
+the version is unchanged. Writes are atomic and the original unit is restored
+on an apply failure, together with pre-apply release symlinks and service
+state when possible.
+
+The override path in `/etc/systemd/system` takes priority over a vendor unit
+under `/usr/lib/systemd/system`. If a package already owns a file under
+`/etc/systemd/system`, platformctl will overwrite that file when explicitly
+configured with `service_file`. Package reinstall/upgrade may overwrite it
+again; coordinate ownership and maintainer scripts before use.
+
+**Limitations:** `service_file` is a full unit replacement, not a drop-in,
+and only basic file validation is performed, not a full systemd syntax check.
+The original unit is held for an in-process failed-apply restore, but no
+persistent backup or ownership registry is maintained yet. Removing
+`service_file` from a later manifest does **not** automatically restore a
+previously overwritten unit. A manual `rollback` command changes the release
+symlinks only, not the unit definition. The systemd unit should continue to
+reference `<root>/current` across versions.
+
 ## Existing installations: install_path
 
 For a pre-existing vendor/legacy installation without versioned releases,
@@ -73,7 +116,7 @@ services:
   legacyApp:
     version: 3.1.0
     install_path: /opt/vendor/legacyApp
-    unit: legacyApp.service
+    service_name: legacyApp.service
     state: running
     autostart: true
 ```
