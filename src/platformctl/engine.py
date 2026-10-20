@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .errors import ApplyError
+from .errors import ApplyError, ReleaseError
 from .models import ServiceSpec, StackManifest
 from .release import activate, current_version, ensure_release_exists, rollback_link
 from .systemd import Systemd
@@ -15,6 +15,7 @@ class ServiceStatus:
     current: str | None
     state: str
     enabled: bool
+    mode: str = "managed"
 
 
 class Engine:
@@ -23,7 +24,10 @@ class Engine:
 
     def validate(self, manifest: StackManifest) -> None:
         for spec in manifest.services.values():
-            ensure_release_exists(spec)
+            if spec.managed:
+                ensure_release_exists(spec)
+            elif spec.install_path is None or not spec.install_path.is_dir():
+                raise ReleaseError(f"installation directory not found: {spec.install_path}")
 
     def status(self, manifest: StackManifest) -> list[ServiceStatus]:
         rows: list[ServiceStatus] = []
@@ -35,11 +39,44 @@ class Engine:
                     current=current_version(spec),
                     state="running" if self.systemd.is_active(spec.unit) else "stopped",
                     enabled=self.systemd.is_enabled(spec.unit),
+                    mode="managed" if spec.managed else "external",
                 )
             )
         return rows
 
+    def _apply_external_service(self, spec: ServiceSpec) -> None:
+        # install_path is an existing installation, not a release we can switch.
+        # Its declared version is metadata; no version discovery or rollback.
+        if spec.install_path is None or not spec.install_path.is_dir():
+            raise ReleaseError(f"installation directory not found: {spec.install_path}")
+        try:
+            if spec.autostart:
+                self.systemd.enable(spec.unit)
+            else:
+                self.systemd.disable(spec.unit)
+
+            active = self.systemd.is_active(spec.unit)
+            if spec.state == "running" and not active:
+                self.systemd.start(spec.unit)
+            elif spec.state == "stopped" and active:
+                self.systemd.stop(spec.unit)
+
+            if self.systemd.is_active(spec.unit) != (spec.state == "running"):
+                raise ApplyError(
+                    f"{spec.unit} did not reach desired state: {spec.state}"
+                )
+        except ApplyError:
+            raise
+        except Exception as exc:
+            raise ApplyError(
+                f"failed reconciling external installation {spec.name}: {exc}"
+            ) from exc
+
     def apply_service(self, spec: ServiceSpec) -> tuple[str | None, str]:
+        if not spec.managed:
+            self._apply_external_service(spec)
+            return None, spec.version
+
         ensure_release_exists(spec)
         old_version = current_version(spec)
         was_active = self.systemd.is_active(spec.unit)
@@ -101,6 +138,8 @@ class Engine:
         return changes
 
     def rollback(self, spec: ServiceSpec) -> tuple[str | None, str]:
+        if not spec.managed:
+            raise ReleaseError(f"{spec.name} uses install_path; rollback is unavailable")
         was_active = self.systemd.is_active(spec.unit)
         if was_active:
             self.systemd.stop(spec.unit)
