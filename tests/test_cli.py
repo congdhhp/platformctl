@@ -30,3 +30,23 @@ def test_list_releases_external_rejected(tmp_path: Path, capsys):
     )
     assert main(["list-releases", "legacy", "-f", str(manifest)]) == 2
     assert "list-releases is unavailable" in capsys.readouterr().err
+
+
+def test_list_releases_only_direct_version_directories(tmp_path: Path, capsys):
+    root = tmp_path / "softA"
+    (root / "2.5.4-build178").mkdir(parents=True)
+    (root / "2.5.5-build184").mkdir()
+    (root / "releases" / "old").mkdir(parents=True)
+    (root / "current").symlink_to(root / "2.5.5-build184")
+    (root / "previous").symlink_to(root / "2.5.4-build178")
+    p = tmp_path / "stack.yaml"
+    p.write_text(
+        "schema: 1\nservices:\n  softA:\n"
+        f"    version: 2.5.5-build184\n    root: {root}\n",
+        encoding="utf-8",
+    )
+    assert main(["list-releases", "softA", "-f", str(p)]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "2.5.4-build178 (previous)",
+        "2.5.5-build184 (current)",
+    ]
