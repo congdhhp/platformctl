@@ -68,6 +68,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "diff":
             changed = False
             for spec in manifest.services.values():
+                if engine.unit_files.prepare(spec) is not None:
+                    changed = True
+                    print(f"{spec.name}: systemd unit {spec.service_name} will be updated")
                 if not spec.managed:
                     print(
                         f"{spec.name}: external installation at {spec.install_path}; "
@@ -79,21 +82,27 @@ def main(argv: list[str] | None = None) -> int:
                     changed = True
                     print(f"{spec.name}: {current or '-'} -> {spec.version}")
             if not changed:
-                print("No managed version changes")
+                print("No managed version or systemd unit changes")
             return 0
 
         if args.command == "apply":
+            engine.validate(manifest)
+            pending_units = {
+                name for name, spec in manifest.services.items()
+                if engine.unit_files.prepare(spec) is not None
+            }
             for name, old, new in engine.apply(manifest):
                 spec = manifest.services[name]
+                suffix = ", systemd unit updated" if name in pending_units else ""
                 if not spec.managed:
                     print(
                         f"{name}: external at {spec.install_path} "
-                        "(systemd state reconciled; version unverified)"
+                        f"(systemd state reconciled{suffix}; version unverified)"
                     )
                 elif old == new:
-                    print(f"{name}: {new} (unchanged)")
+                    print(f"{name}: {new} (unchanged version{suffix})")
                 else:
-                    print(f"{name}: {old or '-'} -> {new}")
+                    print(f"{name}: {old or '-'} -> {new}{suffix}")
             return 0
 
         if args.command in {"rollback", "list-releases"}:
