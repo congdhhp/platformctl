@@ -45,9 +45,9 @@ class FakeSystemd:
 
 def test_apply_switches_release_and_starts_service(tmp_path: Path):
     root = tmp_path / "softA"
-    (root / "releases" / "1.0.0").mkdir(parents=True)
-    (root / "releases" / "1.1.0").mkdir(parents=True)
-    (root / "current").symlink_to(root / "releases" / "1.0.0")
+    (root / "1.0.0").mkdir(parents=True)
+    (root / "1.1.0").mkdir(parents=True)
+    (root / "current").symlink_to(root / "1.0.0")
     spec = ServiceSpec(name="softA", version="1.1.0", unit="softA.service", root=root)
 
     systemd = FakeSystemd()
@@ -124,3 +124,32 @@ def test_external_rollback_rejected_before_stopping_service(tmp_path: Path):
     with pytest.raises(ReleaseError, match="rollback is unavailable"):
         Engine(systemd=systemd).rollback(spec)
     assert systemd.calls == []
+
+
+def test_legacy_symlink_is_rejected_before_stopping_unit(tmp_path: Path):
+    root = tmp_path / "softA"
+    (root / "1.1.0").mkdir(parents=True)
+    old = root / "releases" / "1.0.0"
+    old.mkdir(parents=True)
+    (root / "current").symlink_to(old)
+    spec = ServiceSpec(name="softA", version="1.1.0", unit="softA.service", root=root)
+    systemd = FakeSystemd()
+    systemd.active.add(spec.unit)
+    engine = Engine(systemd=systemd)
+
+    with pytest.raises(ReleaseError, match="invalid current symlink"):
+        engine.apply_service(spec)
+    assert systemd.is_active(spec.unit)
+    assert not systemd.calls
+
+
+def test_validate_accepts_flat_directory(tmp_path: Path):
+    root = tmp_path / "softA"
+    (root / "2.5.5-build184").mkdir(parents=True)
+    spec = ServiceSpec(
+        name="softA", version="2.5.5-build184",
+        unit="softA.service", root=root,
+    )
+    Engine(systemd=FakeSystemd()).validate(
+        StackManifest(schema=1, platform_root=tmp_path, services={"softA": spec})
+    )
