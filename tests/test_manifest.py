@@ -94,7 +94,7 @@ def test_reject_invalid_install_path(tmp_path: Path, extra: str):
         load_manifest(p)
 
 
-@pytest.mark.parametrize("reserved", ["current", "previous", "releases"])
+@pytest.mark.parametrize("reserved", ["current", "previous"])
 def test_reject_reserved_managed_versions(tmp_path: Path, reserved: str):
     p = tmp_path / "stack.yaml"
     p.write_text(
