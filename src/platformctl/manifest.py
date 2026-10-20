@@ -12,10 +12,10 @@ from .release import is_version_name
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+~-]*$")
-_UNIT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:+\\-]*$")
+_SERVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:+\\-]*\\.service$")
 _TOP_LEVEL_KEYS = {"schema", "platform", "services"}
 _PLATFORM_KEYS = {"root"}
-_SERVICE_KEYS = {"version", "unit", "root", "install_path", "state", "autostart", "enabled"}
+_SERVICE_KEYS = {"version", "service_name", "service_file", "root", "install_path", "state", "autostart", "enabled"}
 
 
 def _mapping(value: Any, where: str) -> Mapping[str, Any]:
@@ -83,9 +83,22 @@ def load_manifest(path: str | Path) -> StackManifest:
         if not isinstance(version, str) or not _VERSION_RE.fullmatch(version):
             raise ManifestError(f"services.{name}.version is invalid: {version!r}")
 
-        unit = spec.get("unit", f"{name}.service")
-        if not isinstance(unit, str) or not _UNIT_RE.fullmatch(unit) or "/" in unit:
-            raise ManifestError(f"services.{name}.unit is invalid: {unit!r}")
+        service_name = spec.get("service_name", f"{name}.service")
+        if not isinstance(service_name, str) or not _SERVICE_RE.fullmatch(service_name):
+            raise ManifestError(
+                f"services.{name}.service_name is invalid: {service_name!r}"
+            )
+
+        service_file = None
+        if "service_file" in spec:
+            file_value = spec["service_file"]
+            if not isinstance(file_value, str) or not file_value.strip():
+                raise ManifestError(f"services.{name}.service_file must be a file path")
+            candidate = Path(file_value)
+            service_file = (
+                candidate if candidate.is_absolute()
+                else manifest_path.resolve().parent / candidate
+            ).resolve()
 
         if "root" in spec and "install_path" in spec:
             raise ManifestError(
@@ -123,11 +136,21 @@ def load_manifest(path: str | Path) -> StackManifest:
         services[name] = ServiceSpec(
             name=name,
             version=version,
-            unit=unit,
+            service_name=service_name,
+            service_file=service_file,
             root=root,
             install_path=install_path,
             state=state,
             autostart=autostart,
         )
+
+    unit_owners: dict[str, str] = {}
+    for name, definition in services.items():
+        owner = unit_owners.setdefault(definition.service_name, name)
+        if owner != name:
+            raise ManifestError(
+                f"services.{name} and services.{owner} use the same "
+                f"service_name: {definition.service_name}"
+            )
 
     return StackManifest(schema=schema, platform_root=platform_root, services=services)
