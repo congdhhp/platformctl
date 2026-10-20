@@ -2,7 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [feat/platformctl-mvp]
+    branches: [master]
   pull_request:
 
 jobs:
