@@ -7,7 +7,7 @@ from . import __version__
 from .engine import Engine
 from .errors import PlatformCtlError
 from .manifest import load_manifest
-from .release import current_version, previous_version
+from .release import current_version, list_deployed_releases, previous_version
 
 
 def _manifest(args: argparse.Namespace):
@@ -112,16 +112,14 @@ def main(argv: list[str] | None = None) -> int:
                 )
             current = current_version(spec)
             previous = previous_version(spec)
-            if not spec.releases_dir.is_dir():
-                raise PlatformCtlError(f"release directory not found: {spec.releases_dir}")
-            for path in sorted(p for p in spec.releases_dir.iterdir() if p.is_dir()):
+            for version in list_deployed_releases(spec):
                 flags = []
-                if path.name == current:
+                if version == current:
                     flags.append("current")
-                if path.name == previous:
+                if version == previous:
                     flags.append("previous")
                 suffix = f" ({', '.join(flags)})" if flags else ""
-                print(f"{path.name}{suffix}")
+                print(f"{version}{suffix}")
             return 0
 
         raise AssertionError(args.command)
