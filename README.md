@@ -128,7 +128,7 @@ In external mode:
 
 - `validate` checks that the installation directory exists.
 - `apply` only reconciles systemd start/stop and boot enablement; it does
-  **not** install files, replace symlinks or switch versions.
+  **not** deploy application releases, change version symlinks or switch versions.
 - `version` is declared metadata only. `status` reports the current version
   as `unknown`, and `diff` does not falsely report version drift.
 - `rollback` and `list-releases` are not supported.
@@ -178,7 +178,7 @@ pytest
 - **CI/CD / package deployment** installs immutable versions directly under
   `<root>/<version>` for managed services.
 - **platformctl** activates an already deployed managed version, or reconciles
-  only systemd state for an external installation.
+  only systemd state for an external installation (and optionally its unit file).
 - **systemd** owns process lifecycle, restart policy, boot integration and logs.
 - Mutable application data/config should remain outside the immutable versions
   (for example `/etc/platform/<service>` and `/var/lib/platform/<service>`).
