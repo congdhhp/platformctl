@@ -14,7 +14,7 @@ _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+~-]*$")
 _UNIT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:+\\-]*$")
 _TOP_LEVEL_KEYS = {"schema", "platform", "services"}
 _PLATFORM_KEYS = {"root"}
-_SERVICE_KEYS = {"version", "unit", "root", "state", "autostart", "enabled"}
+_SERVICE_KEYS = {"version", "unit", "root", "install_path", "state", "autostart", "enabled"}
 
 
 def _mapping(value: Any, where: str) -> Mapping[str, Any]:
@@ -86,12 +86,20 @@ def load_manifest(path: str | Path) -> StackManifest:
         if not isinstance(unit, str) or not _UNIT_RE.fullmatch(unit) or "/" in unit:
             raise ManifestError(f"services.{name}.unit is invalid: {unit!r}")
 
-        root_value = spec.get("root")
-        root = (
-            _absolute_path(root_value, f"services.{name}.root")
-            if root_value is not None
-            else platform_root / name
+        if "root" in spec and "install_path" in spec:
+            raise ManifestError(
+                f"services.{name}: root and install_path are mutually exclusive"
+            )
+        install_path = (
+            _absolute_path(spec["install_path"], f"services.{name}.install_path")
+            if "install_path" in spec
+            else None
         )
+        root = (
+            _absolute_path(spec["root"], f"services.{name}.root")
+            if "root" in spec
+            else platform_root / name
+        ) if install_path is None else None
 
         if "enabled" in spec:
             if "state" in spec or "autostart" in spec:
@@ -112,6 +120,7 @@ def load_manifest(path: str | Path) -> StackManifest:
             version=version,
             unit=unit,
             root=root,
+            install_path=install_path,
             state=state,
             autostart=autostart,
         )
