@@ -35,9 +35,9 @@ class UnitFileManager:
             decoded = content.decode("utf-8")
         except (OSError, UnicodeError) as exc:
             raise SystemdError(f"cannot read service_file {source}: {exc}") from exc
-        if not re.search(r"(?m)^\\s*\\[Service\\]\\s*$", decoded):
+        if not re.search(r"(?m)^\s*\[Service\]\s*$", decoded):
             raise SystemdError(f"service_file is missing [Service] section: {source}")
-        if not re.search(r"(?m)^\\s*ExecStart\\s*=", decoded):
+        if not re.search(r"(?m)^\s*ExecStart\s*=", decoded):
             raise SystemdError(f"service_file is missing ExecStart: {source}")
 
         if not self.unit_dir.is_dir():
