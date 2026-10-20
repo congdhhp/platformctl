@@ -12,6 +12,8 @@ def release_path(spec: ServiceSpec, version: str | None = None) -> Path:
 
 
 def ensure_release_exists(spec: ServiceSpec, version: str | None = None) -> Path:
+    if not spec.managed:
+        raise ReleaseError(f"{spec.name} uses install_path; no managed releases available")
     path = release_path(spec, version)
     if not path.is_dir():
         raise ReleaseError(f"release not deployed: {path}")
@@ -19,6 +21,8 @@ def ensure_release_exists(spec: ServiceSpec, version: str | None = None) -> Path
 
 
 def current_version(spec: ServiceSpec) -> str | None:
+    if not spec.managed:
+        return None  # External installation version cannot be verified from symlinks.
     link = spec.current_link
     if not link.is_symlink():
         return None
@@ -33,6 +37,8 @@ def current_version(spec: ServiceSpec) -> str | None:
 
 
 def previous_version(spec: ServiceSpec) -> str | None:
+    if not spec.managed:
+        return None
     link = spec.previous_link
     if not link.is_symlink():
         return None
@@ -73,6 +79,8 @@ def activate(spec: ServiceSpec, version: str | None = None) -> tuple[str | None,
 
 
 def rollback_link(spec: ServiceSpec) -> tuple[str | None, str]:
+    if not spec.managed:
+        raise ReleaseError(f"{spec.name} uses install_path; rollback is unavailable")
     previous = previous_version(spec)
     if previous is None:
         raise ReleaseError(f"no previous release recorded for {spec.name}")
