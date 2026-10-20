@@ -21,7 +21,7 @@ def spec(tmp_path: Path) -> ServiceSpec:
     root = tmp_path / "softA"
     (root / "1.0.0").mkdir(parents=True)
     (root / "1.1.0").mkdir(parents=True)
-    return ServiceSpec(name="softA", version="1.0.0", unit="softA.service", root=root)
+    return ServiceSpec(name="softA", version="1.0.0", service_name="softA.service", root=root)
 
 
 def test_activate_and_rollback(tmp_path: Path):
@@ -43,7 +43,7 @@ def test_external_has_no_managed_release(tmp_path: Path):
     path = tmp_path / "vendor"
     path.mkdir()
     s = ServiceSpec(
-        name="vendor", version="1.0.0", unit="vendor.service",
+        name="vendor", version="1.0.0", service_name="vendor.service",
         root=None, install_path=path,
     )
     assert current_version(s) is None
