@@ -8,6 +8,7 @@ import yaml
 
 from .errors import ManifestError
 from .models import ServiceSpec, StackManifest
+from .release import is_version_name
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+~-]*$")
@@ -100,6 +101,10 @@ def load_manifest(path: str | Path) -> StackManifest:
             if "root" in spec
             else platform_root / name
         ) if install_path is None else None
+        if install_path is None and not is_version_name(version):
+            raise ManifestError(
+                f"services.{name}.version conflicts with a managed directory name: {version!r}"
+            )
 
         if "enabled" in spec:
             if "state" in spec or "autostart" in spec:
