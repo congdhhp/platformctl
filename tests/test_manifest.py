@@ -21,7 +21,8 @@ services:
     manifest = load_manifest(p)
     spec = manifest.services["softA"]
     assert spec.root == Path("/opt/platform/softA")
-    assert spec.unit == "softA.service"
+    assert spec.service_name == "softA.service"
+    assert spec.service_file is None
     assert spec.state == "running"
     assert spec.autostart is True
 
