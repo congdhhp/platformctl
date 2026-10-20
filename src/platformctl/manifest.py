@@ -12,7 +12,7 @@ from .release import is_version_name
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+~-]*$")
-_SERVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:+\\-]*\\.service$")
+_SERVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:+-]*[.]service$")
 _TOP_LEVEL_KEYS = {"schema", "platform", "services"}
 _PLATFORM_KEYS = {"root"}
 _SERVICE_KEYS = {"version", "service_name", "service_file", "root", "install_path", "state", "autostart", "enabled"}
