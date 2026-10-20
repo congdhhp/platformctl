@@ -104,3 +104,55 @@ def test_reject_reserved_managed_versions(tmp_path: Path, reserved: str):
     )
     with pytest.raises(ManifestError, match="conflicts with a managed directory name"):
         load_manifest(p)
+
+
+def test_service_file_relative_to_manifest_and_custom_name(tmp_path: Path):
+    service_dir = tmp_path / "services"
+    service_dir.mkdir()
+    service_path = service_dir / "controller.service"
+    service_path.write_text("[Service]\nExecStart=/opt/controller/current/run.sh\n")
+    manifest_file = tmp_path / "stack.yaml"
+    manifest_file.write_text(
+        "schema: 1\nservices:\n  controller:\n"
+        "    version: 2.5.5\n"
+        "    service_name: controller-daemon.service\n"
+        "    service_file: ./services/controller.service\n",
+        encoding="utf-8",
+    )
+    spec = load_manifest(manifest_file).services["controller"]
+    assert spec.service_name == "controller-daemon.service"
+    assert spec.service_file == service_path
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "unit: softA.service",
+        "service_name: ../bad.service",
+        "service_name: softA.timer",
+        "service_name: ''",
+        "service_file: ''",
+        "service_file: null",
+    ],
+)
+def test_reject_invalid_systemd_fields(tmp_path: Path, field: str):
+    manifest_file = tmp_path / "stack.yaml"
+    manifest_file.write_text(
+        "schema: 1\nservices:\n  softA:\n    version: 1.0.0\n"
+        f"    {field}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ManifestError):
+        load_manifest(manifest_file)
+
+
+def test_reject_duplicate_service_names(tmp_path: Path):
+    manifest_file = tmp_path / "stack.yaml"
+    manifest_file.write_text(
+        "schema: 1\nservices:\n"
+        "  softA:\n    version: 1.0.0\n    service_name: shared.service\n"
+        "  softB:\n    version: 1.0.0\n    service_name: shared.service\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ManifestError, match="same service_name"):
+        load_manifest(manifest_file)
