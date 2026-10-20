@@ -10,8 +10,7 @@ deployed version is active and reconciles the systemd unit.
 
 ## Filesystem model: flat managed layout
 
-Managed installations use **`<root>/<version>/` directly**, without an intermediate
-`releases/` directory:
+Managed installations use **`<root>/<version>/`** directly:
 
 ```text
 /opt/softA/
@@ -29,11 +28,10 @@ The systemd unit must execute via the stable `current` symlink:
 ExecStart=/opt/softA/current/bin/softA
 ```
 
-`current` and `previous` are reserved names, as is `releases` (to distinguish
-legacy layouts). They cannot be used as managed version identifiers. Version
-directories are ordinary directories, **not symlinks**. The managed root should
-contain only immutable version directories and the two controller symlinks;
-keep mutable state/config elsewhere.
+`current` and `previous` are reserved names and cannot be used as version
+identifiers. Version directories must be ordinary directories, **not symlinks**.
+Keep immutable version directories and controller symlinks under `root`; place
+mutable application data/config outside that directory.
 
 ### Example stack.yaml
 
@@ -119,26 +117,9 @@ For each managed service, `platformctl`:
 6. Attempts a per-service rollback if activation fails and an earlier version
    was recorded.
 
-`list-releases` enumerates immediate version directories under `root`, not
-`current`/`previous` symlinks or the legacy `releases` directory.
-
-### Migration from the old releases/ layout
-
-**This is a breaking layout change for managed installations.** An existing
-`/opt/softA/releases/2.5.5-build184` installation is **not** automatically
-relocated. CI/CD must deploy each version to `/opt/softA/2.5.5-build184`
-(or the service's configured `root`).
-
-To migrate an existing host safely, schedule maintenance, stop the service,
-move or redeploy its version directories directly under `root`, repoint
-`current` and `previous` to those directories, verify the unit's `ExecStart`
-still goes through `current`, and then start the service again. Keep a backup
-until the new layout is verified. A symlink still targeting an old nested
-`releases/` path will be **rejected** by `validate`/`apply` instead of being
-silently overwritten.
-
-`platformctl` does not move existing installations or perform this migration
-for you.
+`list-releases` enumerates version directories directly under `root`;
+the controller symlinks `current` and `previous` are excluded. Invalid
+controller symlinks are rejected before `apply` changes a systemd service.
 
 ## Installation for development
 
