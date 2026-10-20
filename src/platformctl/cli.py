@@ -15,11 +15,12 @@ def _manifest(args: argparse.Namespace):
 
 
 def _print_status(rows) -> None:
-    print(f"{'SERVICE':20} {'DESIRED':24} {'CURRENT':24} {'STATE':10} {'AUTOSTART':9}")
+    print(f"{'SERVICE':20} {'DESIRED':24} {'CURRENT':24} {'MODE':9} {'STATE':10} {'AUTOSTART':9}")
     for row in rows:
         print(
-            f"{row.name:20} {row.desired:24} {(row.current or '-'):24} "
-            f"{row.state:10} {('yes' if row.enabled else 'no'):9}"
+            f"{row.name:20} {row.desired:24} "
+            f"{(row.current or ('unknown' if row.mode == 'external' else '-')):24} "
+            f"{row.mode:9} {row.state:10} {('yes' if row.enabled else 'no'):9}"
         )
 
 
@@ -67,17 +68,29 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "diff":
             changed = False
             for spec in manifest.services.values():
+                if not spec.managed:
+                    print(
+                        f"{spec.name}: external installation at {spec.install_path}; "
+                        "version cannot be verified"
+                    )
+                    continue
                 current = current_version(spec)
                 if current != spec.version:
                     changed = True
                     print(f"{spec.name}: {current or '-'} -> {spec.version}")
             if not changed:
-                print("No changes")
+                print("No managed version changes")
             return 0
 
         if args.command == "apply":
             for name, old, new in engine.apply(manifest):
-                if old == new:
+                spec = manifest.services[name]
+                if not spec.managed:
+                    print(
+                        f"{name}: external at {spec.install_path} "
+                        "(systemd state reconciled; version unverified)"
+                    )
+                elif old == new:
                     print(f"{name}: {new} (unchanged)")
                 else:
                     print(f"{name}: {old or '-'} -> {new}")
@@ -93,6 +106,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{spec.name}: {old or '-'} -> {new}")
                 return 0
 
+            if not spec.managed:
+                raise PlatformCtlError(
+                    f"{spec.name} uses install_path; list-releases is unavailable"
+                )
             current = current_version(spec)
             previous = previous_version(spec)
             if not spec.releases_dir.is_dir():
