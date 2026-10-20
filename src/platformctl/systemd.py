@@ -32,6 +32,9 @@ class Systemd:
     def is_enabled(self, unit: str) -> bool:
         return self._run("is-enabled", "--quiet", unit, check=False).returncode == 0
 
+    def daemon_reload(self) -> None:
+        self._run("daemon-reload")
+
     def start(self, unit: str) -> None:
         self._run("start", unit)
 
