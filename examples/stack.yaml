@@ -4,12 +4,15 @@ platform:
   root: /opt/platform
 
 services:
+  # Flat layout: /opt/softA/2.5.5-build184
   softA:
     version: 2.5.5-build184
+    root: /opt/softA
     unit: softA.service
     state: running
     autostart: true
 
+  # Default flat layout: /opt/platform/softB/3.1.0-build73
   softB:
     version: 3.1.0-build73
     unit: softB.service
