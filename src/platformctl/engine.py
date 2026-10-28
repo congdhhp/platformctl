@@ -45,6 +45,12 @@ class Engine:
         self.unit_files.prepare(spec)
 
     def validate(self, manifest: StackManifest) -> None:
+        """Validate configuration without requiring desired releases on the host."""
+        for spec in manifest.services.values():
+            self.unit_files.validate_source(spec)
+
+    def check(self, manifest: StackManifest) -> None:
+        """Check that desired releases exist before any systemd changes."""
         for spec in manifest.services.values():
             self._validate_service(spec)
 
@@ -146,7 +152,7 @@ class Engine:
         return old_version, spec.version
 
     def apply(self, manifest: StackManifest) -> list[tuple[str, str | None, str]]:
-        self.validate(manifest)
+        self.check(manifest)
         changes: list[tuple[str, str | None, str]] = []
         for spec in manifest.services.values():
             old, new = self.apply_service(spec)
