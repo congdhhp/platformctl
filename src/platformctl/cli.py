@@ -32,13 +32,21 @@ def build_parser() -> argparse.ArgumentParser:
         description="Manage native Linux service releases",
     )
     parser.add_argument("--version", action="version", version=f"platformctl {__version__}")
+    parser.add_argument(
+        "--project-directory", default=None,
+        help="base for relative local paths (default: directory containing stack.yaml)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     def with_file(name: str, help_text: str):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("-f", "--file", default="stack.yaml", help="stack manifest path")
+        # Accept both: platformctl --project-directory DIR install ...
+        # and:       platformctl install --project-directory DIR ...
+        # SUPPRESS keeps a parent-level option from being overwritten by a
+        # subparser default when the option is placed before the command.
         p.add_argument(
-            "--project-directory", default=None,
+            "--project-directory", default=argparse.SUPPRESS,
             help="base for relative local paths (default: directory containing stack.yaml)",
         )
         return p
