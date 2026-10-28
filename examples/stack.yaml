@@ -2,14 +2,16 @@ schema: 1
 
 platform:
   root: /opt/platform
+  # Optional shared artifact base (HTTP(S) URL or local directory)
+  source: http://nexus.lan:8081/repository/native-releases/
 
 services:
   # Flat layout: /opt/softA/2.5.5-build184
   softA:
     version: 2.5.5-build184
     root: /opt/softA
-    # Optional: resolve <source>/<version>/<software>-<version>.deb
-    source: http://nexus.lan:8081/repository/native-releases/softA/
+    # Relative source uses platform.source
+    source: softA/
     service_name: softA.service
     service_file: ./softA.service
     state: running
@@ -18,10 +20,13 @@ services:
   # Default flat layout: /opt/platform/softB/3.1.0-build73
   softB:
     version: 3.1.0-build73
+    # Optional direct .deb relative to the global source
+    source: softB/3.1.0-build73/softB.deb
     service_name: softB.service
     state: running
     autostart: true
 
+  # Omitted source means a pre-deployed release, even if platform.source exists.
   softC:
     version: 1.8.7-build52
     service_name: softC.service
