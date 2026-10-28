@@ -241,6 +241,63 @@ For each managed service, `platformctl`:
 the controller symlinks `current` and `previous` are excluded. Invalid
 controller symlinks are rejected before `apply` changes a systemd service.
 
+## Standalone Linux executable (PyInstaller)
+
+In addition to the Python package (`uv tool install` / `pip`), `platformctl`
+can be built as a **single-file Linux executable**, using PyInstaller.
+The target host does not need Python, uv or PyYAML installed.
+
+### Build on Linux (with uv)
+
+Build on **Ubuntu 22.04 x86_64** for the current binary release baseline.
+The build machine must have `uv` and access to Python dependencies:
+
+```bash
+bash scripts/build-binary.sh
+```
+
+The script installs the isolated `build` dependency group from
+`pyproject.toml`, runs `pyinstaller --onefile`, performs `--version` and
+`--help` smoke checks, and creates:
+
+```text
+dist/
+├── platformctl
+└── platformctl.sha256
+```
+
+To install on a **compatible Linux x86_64** target:
+
+```bash
+cd dist
+sha256sum --check platformctl.sha256
+sudo install -o root -g root -m 755 platformctl /usr/local/bin/platformctl
+platformctl --version
+```
+
+On PRs, `.github/workflows/build-binary.yml` builds the executable on an
+Ubuntu 22.04 x86_64 GitHub Actions runner, tests it against a real YAML
+manifest, and uploads a workflow artifact. A push of a matching version tag
+(for example `v0.1.0` for `pyproject.toml` version `0.1.0`) additionally
+builds a Python wheel and publishes these GitHub Release assets:
+
+```text
+platformctl-v0.1.0-linux-x86_64
+platformctl-v0.1.0-linux-x86_64.sha256
+platformctl-0.1.0-py3-none-any.whl
+```
+
+Release assets from GitHub must be marked executable after download
+(e.g. `chmod +x platformctl-v0.1.0-linux-x86_64`).
+
+**Limitations:** PyInstaller `--onefile` bundles the Python interpreter but
+does **not** make a fully statically linked ELF; it relies on compatible
+Linux/glibc libraries and extracts runtime files to a temporary directory
+(which must allow execution). Build/test separately for other CPU architectures
+or older Linux baselines. `platformctl install` and `apply` still require
+system tools (`dpkg`, `dpkg-deb`, `dpkg-query`, `systemctl`) and typically
+root privileges. The binary build does not remove those dependencies.
+
 ## Installation for development
 
 ```bash
