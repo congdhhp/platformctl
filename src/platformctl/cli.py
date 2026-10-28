@@ -7,6 +7,7 @@ from . import __version__
 from .engine import Engine
 from .errors import PlatformCtlError
 from .manifest import load_manifest
+from .packages import PackageManager
 from .release import current_version, list_deployed_releases, previous_version
 
 
@@ -37,7 +38,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("-f", "--file", default="stack.yaml", help="stack manifest path")
         return p
 
-    with_file("validate", "validate manifest and referenced releases")
+    with_file("validate", "validate manifest configuration without requiring releases")
+    with_file("install", "download and install missing .deb releases without activation")
+    with_file("check", "read-only readiness check for desired installed releases")
     with_file("status", "show desired/current versions and systemd state")
     with_file("diff", "show services whose desired version differs from current")
     with_file("apply", "activate desired versions and reconcile systemd state")
@@ -60,6 +63,25 @@ def main(argv: list[str] | None = None) -> int:
             engine.validate(manifest)
             print("OK")
             return 0
+
+        if args.command == "install":
+            engine.validate(manifest)
+            packages = PackageManager()
+            for spec in manifest.services.values():
+                result = packages.install(spec)
+                print(f"{spec.name}: {result}")
+            return 0
+
+        if args.command == "check":
+            engine.validate(manifest)
+            packages = PackageManager()
+            ready = True
+            for spec in manifest.services.values():
+                ok, detail = packages.check(spec)
+                print(f"{spec.name}: {'READY' if ok else 'MISSING'} — {detail}")
+                ready = ready and ok
+            print("All desired releases ready" if ready else "Some releases are not ready")
+            return 0 if ready else 2
 
         if args.command == "status":
             _print_status(engine.status(manifest))
