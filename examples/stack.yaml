@@ -8,6 +8,8 @@ services:
   softA:
     version: 2.5.5-build184
     root: /opt/softA
+    # Optional: resolve <source>/<version>/<software>-<version>.deb
+    source: http://nexus.lan:8081/repository/native-releases/softA/
     service_name: softA.service
     service_file: ./softA.service
     state: running
