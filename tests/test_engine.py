@@ -112,8 +112,9 @@ def test_external_validate_requires_existing_directory(tmp_path: Path):
     manifest = StackManifest(
         schema=1, platform_root=tmp_path, services={spec.name: spec}
     )
+    Engine(systemd=FakeSystemd()).validate(manifest)
     with pytest.raises(ReleaseError, match="installation directory not found"):
-        Engine(systemd=FakeSystemd()).validate(manifest)
+        Engine(systemd=FakeSystemd()).check(manifest)
 
 
 def test_external_rollback_rejected_before_stopping_service(tmp_path: Path):
