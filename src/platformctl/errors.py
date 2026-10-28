@@ -16,3 +16,7 @@ class SystemdError(PlatformCtlError):
 
 class ApplyError(PlatformCtlError):
     """Applying desired state failed."""
+
+
+class PackageError(PlatformCtlError):
+    """Acquiring, checking or installing a Debian release failed."""
