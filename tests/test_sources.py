@@ -255,3 +255,16 @@ def test_cli_project_directory_accepted_for_other_commands(
         "check", "-f", str(manifest), "--project-directory", str(root),
     ]) == 2
     assert "MISSING" in capsys.readouterr().out
+
+
+def test_cli_project_directory_can_precede_subcommand(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    manifest = make_stack(tmp_path / "project", source="./pkg/controller.deb")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    assert main([
+        "--project-directory", str(workspace),
+        "validate", "-f", str(manifest), "--show-sources",
+    ]) == 0
+    assert str(workspace / "pkg" / "controller.deb") in capsys.readouterr().out
