@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .errors import ApplyError, ReleaseError
 from .models import ServiceSpec, StackManifest
+from .packages import PackageManager
 from .release import (
     activate,
     current_version,
@@ -32,14 +33,23 @@ class Engine:
         self,
         systemd: Systemd | None = None,
         unit_files: UnitFileManager | None = None,
+        packages: PackageManager | None = None,
     ) -> None:
         self.systemd = systemd or Systemd()
         self.unit_files = unit_files or UnitFileManager()
+        self.packages = packages or PackageManager()
 
     def _validate_service(self, spec: ServiceSpec) -> None:
         if spec.managed:
             ensure_release_exists(spec)
             validate_managed_links(spec)
+            if spec.source is not None:
+                ready, detail = self.packages.check(spec)
+                if not ready:
+                    raise ReleaseError(
+                        f"{spec.name} is not ready for activation: {detail}; "
+                        "run platformctl install and platformctl check first"
+                    )
         elif spec.install_path is None or not spec.install_path.is_dir():
             raise ReleaseError(f"installation directory not found: {spec.install_path}")
         self.unit_files.prepare(spec)
