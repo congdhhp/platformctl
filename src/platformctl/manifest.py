@@ -130,6 +130,10 @@ def load_manifest(path: str | Path) -> StackManifest:
                     f"services.{name}.source is unsupported with install_path"
                 )
             is_http = raw_source.startswith(("http://", "https://"))
+            if "://" in raw_source and not is_http:
+                raise ManifestError(
+                    f"services.{name}.source supports only http(s) URLs and local paths"
+                )
             if not is_http:
                 # Relative local sources are relative to stack.yaml, not the working dir.
                 raw_source = str(
