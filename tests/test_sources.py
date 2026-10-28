@@ -268,3 +268,14 @@ def test_cli_project_directory_can_precede_subcommand(
         "validate", "-f", str(manifest), "--show-sources",
     ]) == 0
     assert str(workspace / "pkg" / "controller.deb") in capsys.readouterr().out
+
+
+def test_local_global_source_rejects_symlink_escaping_base(tmp_path: Path):
+    store = tmp_path / "store"
+    store.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (store / "controller").symlink_to(outside, target_is_directory=True)
+    manifest = make_stack(tmp_path / "project", global_source=str(store) + "/")
+    with pytest.raises(ManifestError, match="outside platform.source"):
+        load_manifest(manifest)
