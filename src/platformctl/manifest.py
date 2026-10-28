@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from .artifacts import resolve_source
 from .errors import ManifestError
 from .models import ServiceSpec, StackManifest
 from .release import is_version_name
@@ -15,7 +16,7 @@ _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+~-]*$")
 _SERVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:+-]*[.]service$")
 _TOP_LEVEL_KEYS = {"schema", "platform", "services"}
 _PLATFORM_KEYS = {"root"}
-_SERVICE_KEYS = {"version", "service_name", "service_file", "root", "install_path", "state", "autostart", "enabled"}
+_SERVICE_KEYS = {"version", "source", "service_name", "service_file", "root", "install_path", "state", "autostart", "enabled"}
 
 
 def _mapping(value: Any, where: str) -> Mapping[str, Any]:
@@ -119,6 +120,26 @@ def load_manifest(path: str | Path) -> StackManifest:
                 f"services.{name}.version conflicts with a managed directory name: {version!r}"
             )
 
+        source = None
+        if "source" in spec:
+            raw_source = spec["source"]
+            if not isinstance(raw_source, str) or not raw_source.strip():
+                raise ManifestError(f"services.{name}.source must be a non-empty string")
+            if install_path is not None:
+                raise ManifestError(
+                    f"services.{name}.source is unsupported with install_path"
+                )
+            is_http = raw_source.startswith(("http://", "https://"))
+            if not is_http:
+                # Relative local sources are relative to stack.yaml, not the working dir.
+                raw_source = str(
+                    (manifest_path.resolve().parent / raw_source).resolve()
+                    if not Path(raw_source).is_absolute()
+                    else Path(raw_source).resolve()
+                ) + ("/" if raw_source.endswith("/") else "")
+            resolve_source(name, version, raw_source)
+            source = raw_source
+
         if "enabled" in spec:
             if "state" in spec or "autostart" in spec:
                 raise ManifestError(
@@ -138,6 +159,7 @@ def load_manifest(path: str | Path) -> StackManifest:
             version=version,
             service_name=service_name,
             service_file=service_file,
+            source=source,
             root=root,
             install_path=install_path,
             state=state,
