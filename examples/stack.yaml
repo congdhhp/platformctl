@@ -1,0 +1,38 @@
+schema: 1
+
+platform:
+  root: /opt/platform
+
+services:
+  # Flat layout: /opt/softA/2.5.5-build184
+  softA:
+    version: 2.5.5-build184
+    root: /opt/softA
+    # Optional: resolve <source>/<version>/<software>-<version>.deb
+    source: http://nexus.lan:8081/repository/native-releases/softA/
+    service_name: softA.service
+    service_file: ./softA.service
+    state: running
+    autostart: true
+
+  # Default flat layout: /opt/platform/softB/3.1.0-build73
+  softB:
+    version: 3.1.0-build73
+    service_name: softB.service
+    state: running
+    autostart: true
+
+  softC:
+    version: 1.8.7-build52
+    service_name: softC.service
+    state: running
+    autostart: true
+
+  # Existing vendor installation: platformctl controls only systemd state.
+  # No symlink updates, version switching or rollback for this service.
+  legacyApp:
+    version: 3.1.0
+    install_path: /opt/vendor/legacyApp
+    service_name: legacyApp.service
+    state: running
+    autostart: true

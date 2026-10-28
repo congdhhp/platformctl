@@ -1,0 +1,95 @@
+name: Build Linux Binary
+
+on:
+  pull_request:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: PyInstaller (Ubuntu 22.04 / x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
+          test "v${VERSION}" = "${GITHUB_REF_NAME}"
+
+      - name: Build onefile executable
+        run: bash scripts/build-binary.sh
+
+      - name: Smoke-test frozen binary and YAML support
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke="${RUNNER_TEMP}/platformctl-smoke"
+          mkdir -p "${smoke}/controller/1.0.0"
+          cat > "${smoke}/stack.yaml" <<EOF
+          schema: 1
+          services:
+            controller:
+              version: 1.0.0
+              root: ${smoke}/controller
+          EOF
+          ./dist/platformctl --version
+          ./dist/platformctl validate -f "${smoke}/stack.yaml"
+          ./dist/platformctl check -f "${smoke}/stack.yaml"
+          ./dist/platformctl list-releases controller -f "${smoke}/stack.yaml"
+
+      - name: Build wheel and name release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv build --wheel --out-dir dist
+          binary="platformctl-${GITHUB_REF_NAME}-linux-x86_64"
+          mv dist/platformctl "dist/${binary}"
+          rm dist/platformctl.sha256
+          (cd dist && sha256sum "${binary}" > "${binary}.sha256")
+          (cd dist && sha256sum --check "${binary}.sha256")
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: platformctl-linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: platformctl-linux-x86_64
+          path: release-assets
+
+      - name: Verify released executable checksum
+        shell: bash
+        run: |
+          cd release-assets
+          sha256sum --check "platformctl-${GITHUB_REF_NAME}-linux-x86_64.sha256"
+
+      - name: Publish binary, SHA-256 and Python wheel
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
