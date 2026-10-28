@@ -74,8 +74,11 @@ class PackageManager:
             return True, "release directory present (not tracked by dpkg)"
         package = expected_package_name(spec)
         version = self.installed_package_version(package)
-        if version is None:
-            return False, f"release directory exists but dpkg package {package} is absent"
+        if version != spec.version:
+            return False, (
+                f"dpkg package {package} has version {version or 'not installed'}; "
+                f"expected {spec.version}"
+            )
         return True, f"dpkg package {package} ({version}) installed"
 
     @staticmethod
@@ -165,9 +168,13 @@ class PackageManager:
                 f"{spec.name}: .deb package identity {actual!r} != {expected!r}; "
                 "each release needs its own Debian package name"
             )
-        if not version or arch not in {host, "all"}:
+        if version != spec.version:
             raise PackageError(
-                f"{spec.name}: invalid package version or architecture {arch!r} (host {host})"
+                f"{spec.name}: Debian Version {version!r} != desired {spec.version!r}"
+            )
+        if arch not in {host, "all"}:
+            raise PackageError(
+                f"{spec.name}: package architecture {arch!r} != host {host!r}"
             )
         control = scratch / "control"
         control.mkdir()
@@ -191,8 +198,13 @@ class PackageManager:
         target = spec.version_root / spec.version
         if target.exists() or target.is_symlink():
             ensure_release_exists(spec)
-            if installed is not None or spec.source is None:
+            if spec.source is None or installed == spec.version:
                 return "already installed"
+            if installed is not None:
+                raise PackageError(
+                    f"{spec.name}: installed Debian Version {installed!r} "
+                    f"does not match desired {spec.version!r}"
+                )
             raise PackageError(
                 f"{spec.name}: release directory exists but package {package} is not "
                 "registered by dpkg; refusing to overwrite the release"
