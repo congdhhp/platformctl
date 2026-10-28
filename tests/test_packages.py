@@ -42,7 +42,7 @@ def _deb(
         script = control / "postinst"
         script.write_text("#!/bin/sh\nexit 0\n")
         script.chmod(0o755)
-    root = data / "opt" / "ControllerSoftware" / version
+    root = data / str(tmp_path / "ControllerSoftware").lstrip("/") / version
     root.mkdir(parents=True)
     (root / "run.sh").write_text("#!/bin/sh\nexit 0\n")
     if outside:
