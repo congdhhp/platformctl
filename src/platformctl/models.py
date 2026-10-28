@@ -19,6 +19,7 @@ class ServiceSpec:
     autostart: bool = True
     install_path: Path | None = None
     service_file: Path | None = None
+    source: str | None = None
 
     def __post_init__(self) -> None:
         if (self.root is None) == (self.install_path is None):
