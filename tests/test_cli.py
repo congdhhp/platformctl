@@ -82,3 +82,64 @@ def test_diff_shows_only_service_file_change(tmp_path: Path, capsys, monkeypatch
     output = capsys.readouterr().out
     assert "systemd unit controller.service will be updated" in output
     assert "No managed version" not in output
+
+
+def test_validate_accepts_missing_managed_release_and_check_reports_not_ready(
+    tmp_path: Path, capsys,
+):
+    root = tmp_path / "missing"
+    p = tmp_path / "stack.yaml"
+    p.write_text(
+        f"schema: 1\nservices:\n  controller:\n"
+        f"    version: 2.5.5-build184\n    root: {root}\n",
+        encoding="utf-8",
+    )
+    assert main(["validate", "-f", str(p)]) == 0
+    assert "OK" in capsys.readouterr().out
+    assert main(["check", "-f", str(p)]) == 2
+    output = capsys.readouterr().out
+    assert "MISSING" in output
+    assert "Some releases are not ready" in output
+    assert not root.exists()
+
+
+def test_check_reports_ready_for_legacy_predeployed_release(tmp_path: Path, capsys):
+    root = tmp_path / "controller"
+    (root / "1.0.0").mkdir(parents=True)
+    p = tmp_path / "stack.yaml"
+    p.write_text(
+        f"schema: 1\nservices:\n  controller:\n"
+        f"    version: 1.0.0\n    root: {root}\n",
+        encoding="utf-8",
+    )
+    assert main(["check", "-f", str(p)]) == 0
+    output = capsys.readouterr().out
+    assert "READY" in output
+    assert "All desired releases ready" in output
+    assert not (root / "current").exists()
+
+
+def test_install_command_invokes_package_manager_without_activation(
+    tmp_path: Path, capsys, monkeypatch,
+):
+    p = tmp_path / "stack.yaml"
+    p.write_text(
+        f"schema: 1\nservices:\n  controller:\n"
+        f"    version: 2.5.5-build184\n    root: {tmp_path / 'controller'}\n"
+        f"    source: {tmp_path / 'controller.deb'}\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    class FakePackages:
+        def install(self, spec):
+            calls.append((spec.name, spec.version, spec.source))
+            return "installed from fake .deb"
+
+    monkeypatch.setattr("platformctl.cli.PackageManager", FakePackages)
+    assert main(["install", "-f", str(p)]) == 0
+    assert calls == [
+        ("controller", "2.5.5-build184", str(tmp_path / "controller.deb"))
+    ]
+    assert "installed from fake .deb" in capsys.readouterr().out
+    assert not (tmp_path / "controller").exists()
