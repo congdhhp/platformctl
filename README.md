@@ -68,9 +68,9 @@ combination of runtime state and boot autostart.
 
 ## Optional source: install without activation
 
-A managed service may specify a single optional \`source\` string:
+A managed service may specify a single optional `source` string:
 
-\`\`\`yaml
+```yaml
 services:
   controller:
     version: 2.5.5-build184
@@ -78,59 +78,59 @@ services:
     source: http://nexus.lan:8081/repository/native-releases/controller/
     service_name: controller.service
     service_file: ./services/controller.service
-\`\`\`
+```
 
 Supported source forms:
 
-- **Direct .deb**: \`https://nexus.lan/releases/controller.deb\` or \`/mnt/packages/controller.deb\`.
-- **Directory** (trailing slash required): \`https://nexus.lan/releases/controller/\` or \`/mnt/packages/controller/\`. The resolved artifact is exactly \`<source>/<version>/<service>-<version>.deb\`.
-- Relative local paths are resolved from the \`stack.yaml\` directory.
+- **Direct .deb**: `https://nexus.lan/releases/controller.deb` or `/mnt/packages/controller.deb`.
+- **Directory** (trailing slash required): `https://nexus.lan/releases/controller/` or `/mnt/packages/controller/`. The resolved artifact is exactly `<source>/<version>/<service>-<version>.deb`.
+- Relative local paths are resolved from the `stack.yaml` directory.
 - Nexus Raw repositories work as ordinary HTTP(S) sources. No Nexus search API or APT integration is required. HTTP without TLS provides **no transport integrity**; only use trusted internal sources. Remote authentication and signed/checksum-verified artifacts are not implemented yet.
 
-\`source\` is optional; installations previously deployed by other means remain supported. It is not supported for the external \`install_path\` mode.
+`source` is optional; installations previously deployed by other means remain supported. It is not supported for the external `install_path` mode.
 
 ### Preparation workflow
 
-\`\`\`bash
+```bash
 platformctl validate -f stack.yaml
 sudo platformctl install -f stack.yaml
 platformctl check -f stack.yaml
 # When the deployment is approved:
 sudo platformctl apply -f stack.yaml
-\`\`\`
+```
 
-- \`validate\` checks the manifest and an optional local \`service_file\`, but **does not require a deployed release**.
-- \`install\` resolves and downloads a missing .deb, inspects it, then executes \`dpkg -i\`. A valid already-installed release is skipped. It **does not** change \`current\`, \`previous\`, systemd units, enablement or running process state. \`dpkg\` may still have other OS-level side effects, so only trusted packages may be installed.
-- \`check\` is read-only; it checks each desired managed directory and controller symlinks. With \`source\`, it also verifies the expected Debian package and exact Debian version are in the dpkg installed state. Without \`source\`, it accepts an existing version directory as a legacy/pre-deployed release. External \`install_path\` is reported as version unverified.
-- \`apply\` **never downloads or installs**. It checks that desired releases are present, then updates \`current\` and reconciles systemd, including an optional \`service_file\`. An unprepared release fails before any service is touched.
+- `validate` checks the manifest and an optional local `service_file`, but **does not require a deployed release**.
+- `install` resolves and downloads a missing .deb, inspects it, then executes `dpkg -i`. A valid already-installed release is skipped. It **does not** change `current`, `previous`, systemd units, enablement or running process state. `dpkg` may still have other OS-level side effects, so only trusted packages may be installed.
+- `check` is read-only; it checks each desired managed directory and controller symlinks. With `source`, it also verifies the expected Debian package and exact Debian version are in the dpkg installed state. Without `source`, it accepts an existing version directory as a legacy/pre-deployed release. External `install_path` is reported as version unverified.
+- `apply` **never downloads or installs**. It checks that desired releases are present, then updates `current` and reconciles systemd, including an optional `service_file`. An unprepared release fails before any service is touched.
 
 ### Mandatory versioned Debian package convention
 
-For \`controller\` version \`2.5.5-build184\`:
+For `controller` version `2.5.5-build184`:
 
-\`\`\`text
+```text
 Filename: controller-2.5.5-build184.deb
 Debian Package: controller-release-2.5.5-build184
 Debian Version: 2.5.5-build184
 Payload: /opt/ControllerSoftware/2.5.5-build184/...
-\`\`\`
+```
 
 The actual Debian **Package** field must be distinct per release; a different
-filename or installation path alone is not sufficient for \`dpkg\` co-installation.
-Package name is derived as \`<service lowercase>-release-<version lowercase>\`;
+filename or installation path alone is not sufficient for `dpkg` co-installation.
+Package name is derived as `<service lowercase>-release-<version lowercase>`;
 source-backed versions must use Debian-compatible lowercase identifiers.
-The Debian **Version** field must equal the desired \`version\` in stack.yaml.
+The Debian **Version** field must equal the desired `version` in stack.yaml.
 
 Preflight rejects packages whose payload includes files **outside the exact
 version directory**, unsafe links, special files, or maintainer scripts such
-as \`postinst\`, \`preinst\`, \`prerm\`, \`postrm\`, \`config\`, \`triggers\`.
-This deliberately rejects legacy packages whose \`postinst\` creates or
+as `postinst`, `preinst`, `prerm`, `postrm`, `config`, `triggers`.
+This deliberately rejects legacy packages whose `postinst` creates or
 restarts a shared service. Adjust CMake/CPack to produce a script-free,
 version-specific **application release** .deb; configure the systemd unit
-separately with \`service_file\` if required. Do not package \`current\` or
-\`previous\` into the .deb.
+separately with `service_file` if required. Do not package `current` or
+`previous` into the .deb.
 
-The package manager uses \`dpkg -i\`, which does **not** automatically install
+The package manager uses `dpkg -i`, which does **not** automatically install
 missing dependencies. Shared system libraries and dependencies should be
 pre-provisioned. No permanent download cache, artifact checksum verification,
 package cleanup, or filesystem transaction is provided yet. Installing a .deb
