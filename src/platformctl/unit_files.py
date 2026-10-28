@@ -23,7 +23,8 @@ class UnitFileManager:
     def __init__(self, unit_dir: Path = Path("/etc/systemd/system")) -> None:
         self.unit_dir = Path(unit_dir)
 
-    def prepare(self, spec: ServiceSpec) -> UnitChange | None:
+    @staticmethod
+    def validate_source(spec: ServiceSpec) -> bytes | None:
         if spec.service_file is None:
             return None
 
@@ -39,6 +40,12 @@ class UnitFileManager:
             raise SystemdError(f"service_file is missing [Service] section: {source}")
         if not re.search(r"(?m)^\s*ExecStart\s*=", decoded):
             raise SystemdError(f"service_file is missing ExecStart: {source}")
+        return content
+
+    def prepare(self, spec: ServiceSpec) -> UnitChange | None:
+        content = self.validate_source(spec)
+        if content is None:
+            return None
 
         if not self.unit_dir.is_dir():
             raise SystemdError(f"systemd unit directory does not exist: {self.unit_dir}")
