@@ -23,7 +23,10 @@ def _source_kind(value: str) -> str:
     if value.startswith("//"):
         raise ManifestError("source must not begin with '//'")
 
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise ManifestError(f"invalid artifact source URL/path: {exc}") from exc
     if parsed.scheme:
         if parsed.scheme not in {"http", "https"}:
             raise ManifestError("source supports only local paths and HTTP(S) URLs")
@@ -87,7 +90,11 @@ def normalize_service_source(
     if _source_kind(global_source) == "remote":
         result = global_source + "/".join(quote(part, safe="") for part in relative_parts) + suffix
     else:
-        result = str((Path(global_source) / relative).resolve()) + suffix
+        base = Path(global_source).resolve()
+        candidate = (base / relative).resolve()
+        if not candidate.is_relative_to(base):
+            raise ManifestError("relative service source resolves outside platform.source")
+        result = str(candidate) + suffix
     _source_kind(result)
     return result
 
