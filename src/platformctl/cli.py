@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from . import __version__
+from .artifacts import artifact_for
 from .engine import Engine
 from .errors import PlatformCtlError
 from .manifest import load_manifest
@@ -12,7 +13,7 @@ from .release import current_version, list_deployed_releases, previous_version
 
 
 def _manifest(args: argparse.Namespace):
-    return load_manifest(args.file)
+    return load_manifest(args.file, project_directory=args.project_directory)
 
 
 def _print_status(rows) -> None:
@@ -36,9 +37,17 @@ def build_parser() -> argparse.ArgumentParser:
     def with_file(name: str, help_text: str):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("-f", "--file", default="stack.yaml", help="stack manifest path")
+        p.add_argument(
+            "--project-directory", default=None,
+            help="base for relative local paths (default: directory containing stack.yaml)",
+        )
         return p
 
-    with_file("validate", "validate manifest configuration without requiring releases")
+    validate = with_file("validate", "validate manifest configuration without requiring releases")
+    validate.add_argument(
+        "--show-sources", action="store_true",
+        help="show resolved artifact locations without downloading them",
+    )
     with_file("install", "download and install missing .deb releases without activation")
     with_file("check", "read-only readiness check for desired installed releases")
     with_file("status", "show desired/current versions and systemd state")
@@ -61,6 +70,16 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "validate":
             engine.validate(manifest)
+            if args.show_sources:
+                print(f"Project directory: {manifest.project_directory}")
+                print(f"Global source: {manifest.global_source or '-'}")
+                print("Resolved artifact sources:")
+                for spec in manifest.services.values():
+                    location = (
+                        artifact_for(spec).location if spec.source is not None
+                        else "(pre-installed; no source)"
+                    )
+                    print(f"  {spec.name}: {location}")
             print("OK")
             return 0
 
