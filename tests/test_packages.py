@@ -214,3 +214,44 @@ def test_untracked_directory_is_not_overwritten(tmp_path: Path, monkeypatch):
 
 def test_dpkg_name_convention(tmp_path: Path):
     assert expected_package_name(_spec(tmp_path)) == "controller-release-2.5.5-build184"
+
+
+def test_http_fetch_streams_to_local_file(tmp_path: Path, monkeypatch):
+    import io
+    from platformctl import packages
+
+    requested = []
+
+    def fake_urlopen(request, timeout):
+        requested.append((request.full_url, timeout))
+        return io.BytesIO(b"debian-package-bytes")
+
+    monkeypatch.setattr(packages.urllib.request, "urlopen", fake_urlopen)
+    output = tmp_path / "download.deb"
+    PackageManager._download("https://repo.lan/controller.deb", output)
+
+    assert output.read_bytes() == b"debian-package-bytes"
+    assert requested == [("https://repo.lan/controller.deb", 60)]
+
+
+def test_apply_rejects_unregistered_package_before_touching_systemd(tmp_path: Path):
+    from platformctl.engine import Engine
+    from platformctl.errors import ReleaseError
+
+    spec = _spec(tmp_path, source="/mnt/packages/controller/")
+    (spec.version_root / spec.version).mkdir(parents=True)
+
+    class SystemdMustNotBeCalled:
+        def is_active(self, unit):
+            raise AssertionError("systemd must not be touched")
+        def is_enabled(self, unit):
+            raise AssertionError("systemd must not be touched")
+
+    class UnreadyPackages(PackageManager):
+        def check(self, spec):
+            return False, "dpkg package not installed"
+
+    engine = Engine(systemd=SystemdMustNotBeCalled(), packages=UnreadyPackages())
+    with pytest.raises(ReleaseError, match="not ready for activation"):
+        engine.apply_service(spec)
+    assert not spec.current_link.exists()
