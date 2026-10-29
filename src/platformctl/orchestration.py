@@ -366,7 +366,7 @@ class Orchestrator:
             return HostResult(host.name, "sudo-preflight", 0, "already root")
         if host.connection == "ssh":
             check = self.transport.run(
-                host, ["sudo", "-n", "bash", "-c", "true"]
+                host, ["sudo", "-n", "bash", "-s", "--"], stdin=b"true\n"
             )
         else:
             try:
