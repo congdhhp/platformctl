@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Example Briefcase GUI
+Comment=Example only: replace paths with actual application launch script and icon
+Exec=/opt/BriefcaseSoftware/current/software/bin/launch.sh
+Path=/opt/BriefcaseSoftware/current/software/bin
+Icon=/opt/BriefcaseSoftware/current/software/icons/briefcase.svg
+Terminal=false
+Categories=Utility;
