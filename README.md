@@ -10,6 +10,152 @@ version-specific Debian packages or pre-deploys release directories. `platformct
 can install a missing .deb in a separate preparation step, verify that desired
 releases are ready, then activate them and reconcile systemd at deployment time.
 
+## Multi-host deployment (agentless SSH, including a local controller host)
+
+Use **one stack for the entire deployment**. An optional inventory assigns each
+software to one or more local/remote hosts. The controller may itself run
+software: mark its inventory host `connection: local`. Local operations invoke
+the existing CLI/Engine directly rather than SSH to the same machine.
+
+```yaml
+# inventory.yaml
+defaults:
+  connection: ssh
+  user: deploy
+  become: true
+hosts:
+  H1:
+    connection: local
+    # Optional: hostname: exact-machine-hostname
+  H2:
+    address: 192.168.10.12
+  H3:
+    address: 192.168.10.13
+groups:
+  remote: [H2, H3]
+```
+
+```yaml
+# stack.yaml
+schema: 1
+platform:
+  root: /opt/platform
+  source: http://nexus.lan:8081/repository/native-releases/
+services:
+  A:
+    hosts: H1
+    version: 1.0.0
+    type: service
+    source: A/
+  B:
+    hosts: H1
+    type: desktop
+    version: 2.0.0
+    source: B/
+    desktop_file: ./desktops/B.desktop
+  C:
+    hosts: H2
+    version: 3.0.0
+    source: C/
+  D:
+    hosts: H3
+    version: 1.5.0
+    source: D/
+  E:
+    hosts: H3
+    version: 2.1.0
+    source: /mnt/builds/E-2.1.0.deb
+    # Source is on controller and uploaded to H3 by default.
+```
+
+```bash
+platformctl plan -f stack.yaml -i inventory.yaml
+platformctl validate -f stack.yaml -i inventory.yaml
+platformctl status -f stack.yaml -i inventory.yaml
+platformctl install -f stack.yaml -i inventory.yaml
+platformctl check -f stack.yaml -i inventory.yaml
+platformctl apply -f stack.yaml -i inventory.yaml --parallel 2
+platformctl apply -f stack.yaml -i inventory.yaml --limit H1
+platformctl rollback E -f stack.yaml -i inventory.yaml --limit H3
+```
+
+Options `-i / --inventory`, `--limit` and `--parallel` may appear
+before or after the subcommand. `--limit` accepts host/group names separated
+by commas. `--parallel` ranges from 1 to 32 (default: 1 host at a time).
+`plan` is offline and reports placements and artifact delivery strategy;
+`validate` validates manifest and local configuration files without SSH.
+
+Placement: `hosts: H1`, `hosts: [H1, H2]`, or `hosts: remote` (inventory
+group). If `hosts` is omitted, the software targets the inventory's local
+host, or an implicit local controller when no local host is defined.
+For safety an inventory may bind its local host using
+`hostname: <output-of-hostname>`; a mismatch fails before execution.
+The schema remains `schema: 1`. Without `-i`, existing local-only
+manifests still behave as before; a manifest with `hosts` requires `-i`.
+
+### Artifact delivery
+
+The resolved service `source` remains the same directory convention or
+direct `.deb`. `platform.source` and project-directory rules are unchanged:
+
+| Source type | Remote target default | Explicit override |
+| --- | --- | --- |
+| HTTP(S) URL | Target downloads directly | `source_location: controller` downloads on controller then pushes via SSH |
+| Local path (relative or absolute) | Controller uploads `.deb` | `source_location: target` uses a target-local absolute path |
+| Omitted source | Already installed release | No transfer |
+
+For `source_location: target` with a local path, the original `source`
+must be absolute (no controller-side symlink resolution).
+Directory sources still expand to
+`<source>/<version>/<software>-<version>.deb`.
+The local controller host reads its local artifacts and unit/desktop files
+directly. For SSH targets, configuration files are transferred into a private
+`/tmp/platformctl-XXXXXXXX/` workspace with verified SHA-256; local/controller
+artifacts are only uploaded by the `install` command. Uploaded launcher files
+retain the original `.desktop` filename (their XDG desktop ID). After the
+remote command, staging is removed. For HTTP downloaded at the target, the artifact is streamed back to the
+controller for **package inspection** before the target performs `dpkg -i`.
+This adds transfer overhead but preserves the existing script-free,
+version-scoped Debian payload checks without Python on the remote host.
+
+### Remote prerequisites and safety
+
+- **Only the controller installs platformctl**. Targets do **not** need the
+  platformctl binary, Python, a platformctl daemon or an Ansible runtime.
+- Remote hosts require OpenSSH server, **Bash**, `dpkg`, `dpkg-deb`, standard
+  Linux coreutils, `sha256sum` and `realpath`; service hosts also require
+  `systemctl`. HTTP target downloads additionally require `curl`.
+- The controller needs `dpkg-deb` to inspect downloaded or streamed .deb
+  payloads. Package architecture is compared against the **target host**.
+  Package metadata, scripts/triggers, and version-root payload restrictions
+  are validated **before** any remote `dpkg -i`.
+- Set up OpenSSH keys/agent, verified `known_hosts`, and
+  `sudo -n bash -s` privilege escalation for install/apply/rollback.
+  This grants substantial root capability; use a dedicated, trusted deploy
+  account. Do **not** expose the SSH credentials or inventory to untrusted users.
+- The controller streams its Bash lifecycle worker through SSH **stdin**
+  for each operation. No helper executable, Python package or service is
+  installed permanently on the target. Local operations use the existing
+  platformctl Engine directly without SSH to self.
+- On multi-host `apply`, every selected host first runs `check`, then
+  a privilege preflight. If any host fails readiness or permissions, **no
+  host is activated**. Activation itself is not a distributed transaction;
+  cross-host automatic rollback, resume and deployment journals are not yet
+  implemented.
+- A host may change several software sequentially. If an operation fails,
+  the worker attempts local link/service/launcher restoration, but completed
+  software on other hosts are not automatically rolled back. Validate staging,
+  rollback, systemd and GUI behavior on test machines before production use.
+- For target-local files, the SSH account must be able to read the artifact
+  for controller-side inspection. Local source paths are resolved on the
+  controller, including with an explicit project directory.
+- Output is grouped by host; machine-readable JSON, rolling health checks and
+  advanced dry-run verification are follow-up features.
+
+Full runnable-layout examples:
+`examples/inventory.yaml` and `examples/multi-host-stack.yaml`.
+
+
 ## Filesystem model: flat managed layout
 
 Managed installations use **`<root>/<version>/`** directly:

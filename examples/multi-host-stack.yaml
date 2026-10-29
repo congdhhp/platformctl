@@ -1,0 +1,42 @@
+# Multi-host example. Run from H1 with:
+# platformctl plan -f examples/multi-host-stack.yaml -i examples/inventory.yaml
+schema: 1
+
+platform:
+  root: /opt/platform
+  source: http://nexus.lan:8081/repository/native-releases/
+
+services:
+  A:
+    hosts: H1
+    type: service
+    version: 1.0.0
+    source: A/
+    state: running
+
+  B:
+    hosts: H1
+    type: desktop
+    version: 2.0.0
+    source: B/
+    desktop_file: ./briefcase.desktop
+    root: /opt/BriefcaseSoftware
+
+  C:
+    hosts: H2
+    type: service
+    version: 3.0.0
+    source: C/
+
+  D:
+    hosts: H3
+    type: service
+    version: 1.5.0
+    source: D/
+
+  E:
+    hosts: H3
+    type: service
+    version: 2.1.0
+    source: ./packages/E-2.1.0.deb
+    # Local path refers to the controller and is uploaded to H3.

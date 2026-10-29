@@ -1,0 +1,24 @@
+# Example inventory: the controller is also H1.
+# Replace addresses and set up SSH known_hosts and SSH keys before use.
+defaults:
+  connection: ssh
+  user: deploy
+  port: 22
+  become: true
+
+hosts:
+  H1:
+    connection: local
+    # Optional safety binding to a machine's exact hostname:
+    # hostname: actual-hostname
+
+  H2:
+    address: 192.168.10.12
+
+  H3:
+    address: 192.168.10.13
+
+groups:
+  remote:
+    - H2
+    - H3
