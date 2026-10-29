@@ -19,7 +19,7 @@ services:
     type: desktop
     version: 2.0.0
     source: B/
-    desktop_file: ./examples/briefcase.desktop
+    desktop_file: ./briefcase.desktop
     root: /opt/BriefcaseSoftware
 
   C:
