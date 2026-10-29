@@ -157,12 +157,15 @@ class PackageManager:
             if proc.stderr is not None:
                 proc.stderr.close()
 
-    def _inspect(self, spec: ServiceSpec, deb: Path, scratch: Path) -> str:
+    def _inspect(
+        self, spec: ServiceSpec, deb: Path, scratch: Path,
+        target_arch: str | None = None,
+    ) -> str:
         expected = expected_package_name(spec)
         actual = self._run("dpkg-deb", "-f", str(deb), "Package").stdout.strip()
         version = self._run("dpkg-deb", "-f", str(deb), "Version").stdout.strip()
         arch = self._run("dpkg-deb", "-f", str(deb), "Architecture").stdout.strip()
-        host = self._run("dpkg", "--print-architecture").stdout.strip()
+        host = target_arch or self._run("dpkg", "--print-architecture").stdout.strip()
         if actual != expected:
             raise PackageError(
                 f"{spec.name}: .deb package identity {actual!r} != {expected!r}; "
