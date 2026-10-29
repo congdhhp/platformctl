@@ -229,6 +229,8 @@ def test_apply_checks_every_host_before_activation(tmp_path: Path):
     class FakeOrchestrator(Orchestrator):
         def __init__(self):
             self.calls = []
+        def _privilege_check(self, target):
+            return HostResult(target.host.name, "sudo-preflight", 0, "READY")
         def _host(self, stack, target, command, software=None):
             self.calls.append((target.host.name, command))
             if command == "check" and target.host.name == "H2":
@@ -270,3 +272,55 @@ def test_ssh_is_strict_and_privilege_escalation_only_for_mutations():
     assert _remote_command(host, "install", "/tmp/stack.yaml", None)[:3] == [
         "sudo", "-n", "platformctl",
     ]
+
+
+def test_apply_runs_only_after_all_sudo_preflights_pass(tmp_path: Path):
+    p, i = fixtures(tmp_path)
+    stack = load_manifest(p)
+    targets = build_targets(stack, load_inventory(i))
+
+    class FakeOrchestrator(Orchestrator):
+        def __init__(self):
+            self.calls = []
+            self.bad_sudo = False
+
+        def _host(self, stack, target, command, software=None):
+            self.calls.append((target.host.name, command))
+            return HostResult(target.host.name, command, 0, "READY")
+
+        def _privilege_check(self, target):
+            self.calls.append((target.host.name, "sudo-preflight"))
+            if self.bad_sudo and target.host.name == "H3":
+                raise RuntimeError("sudo -n permission denied")
+            return HostResult(target.host.name, "sudo-preflight", 0, "READY")
+
+    orch = FakeOrchestrator()
+    orch.bad_sudo = True
+    result = orch.execute(stack, targets, "apply")
+    assert all(r.code != 0 for r in result)
+    assert not any(command == "apply" for _, command in orch.calls)
+
+    orch.calls.clear()
+    orch.bad_sudo = False
+    result = orch.execute(stack, targets, "apply")
+    assert all(r.code == 0 for r in result)
+    assert [command for _, command in orch.calls].count("apply") == 3
+    assert [command for _, command in orch.calls].count("sudo-preflight") == 3
+
+
+def test_parallel_local_and_remote_keeps_host_result_order(tmp_path: Path):
+    p, i = fixtures(tmp_path)
+    stack = load_manifest(p)
+    targets = build_targets(stack, load_inventory(i))
+
+    class RecordOrchestrator(Orchestrator):
+        def __init__(self):
+            self.calls = []
+        def _host(self, stack, target, command, software=None):
+            self.calls.append((target.host.name, command))
+            return HostResult(target.host.name, command, 0, target.host.name)
+
+    orch = RecordOrchestrator()
+    result = orch.execute(stack, targets, "status", parallel=3)
+    assert [r.host for r in result] == ["H1", "H2", "H3"]
+    assert orch.calls[0] == ("H1", "status")
