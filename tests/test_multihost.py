@@ -182,6 +182,7 @@ def test_remote_install_uploads_local_deb_and_checks_package(tmp_path: Path, mon
     assert inspections == [(b"fake-package", "amd64")]
     assert fake.executed[-1][1][0] == "install"
     assert fake.executed[-1][2] is True
+    assert len(fake.executed[-1][1][-1]) == 64
     assert fake.cleaned == [("H2", "/tmp/platformctl-12345678")]
     assert all(cmd[1][0] in {"check", "install"} for cmd in fake.executed)
 
@@ -292,7 +293,7 @@ def test_bash_worker_is_syntactically_valid_and_runs_check_without_python(tmp_pa
     args = [
         "bash", "-s", "--", "check", "A", "1.0.0", "service",
         str(root), "1", "A.service", "running", "true",
-        "", "", "", "", "0",
+        "", "", "", "", "0", "",
     ]
     process = subprocess.run(
         args, input=WORKER, text=True, capture_output=True
@@ -330,7 +331,7 @@ def test_bash_worker_real_release_activation_and_rollback(tmp_path: Path):
     import os
     env = {**os.environ, "PATH": str(fakebin) + ":" + os.environ["PATH"]}
     base = ["A", "2.0.0", "service", str(root), "1",
-            "A.service", "stopped", "false", "", "", "", "", "0"]
+            "A.service", "stopped", "false", "", "", "", "", "0", ""]
 
     def run(action: str):
         return subprocess.run(
@@ -356,8 +357,24 @@ def test_bash_worker_rejects_unmanaged_current_link(tmp_path: Path):
     argv = [
         "bash", "-s", "--", "check", "A", "1.0.0", "service",
         str(root), "1", "A.service", "stopped", "false",
-        "", "", "", "", "0",
+        "", "", "", "", "0", "",
     ]
     result = subprocess.run(argv, input=WORKER, text=True, capture_output=True)
     assert result.returncode != 0
     assert "not a symlink" in result.stderr
+
+
+def test_bash_worker_refuses_modified_artifact_before_dpkg(tmp_path: Path):
+    root = tmp_path / "software"
+    root.mkdir()
+    artifact = tmp_path / "artifact.deb"
+    artifact.write_bytes(b"tampered-package")
+    argv = [
+        "bash", "-s", "--", "install", "A", "1.0.0", "service",
+        str(root), "1", "A.service", "stopped", "false",
+        "", "", str(artifact), "a-release-1.0.0", "1", "0" * 64,
+    ]
+    result = subprocess.run(argv, input=WORKER, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert "SHA-256 changed after validation" in result.stderr
+    assert not (root / "1.0.0").exists()
