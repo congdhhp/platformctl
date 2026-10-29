@@ -11,7 +11,7 @@ export LC_ALL=C
 action="$1"; name="$2"; version="$3"; kind="$4"; root="$5"
 managed="$6"; unit="$7"; desired="$8"; autostart="$9"
 shift 9
-unit_file="$1"; desktop_file="$2"; deb="$3"; package="$4"; has_source="$5"
+unit_file="$1"; desktop_file="$2"; deb="$3"; package="$4"; has_source="$5"; expected_sha="$6"
 current="$root/current"; previous="$root/previous"; release="$root/$version"
 launcher="/usr/local/share/applications/$(basename -- "$desktop_file")"
 installed_unit="/etc/systemd/system/$unit"
@@ -165,12 +165,22 @@ case "$action" in
       exit 0
     fi
     [[ "$has_source" == 1 && -f "$deb" && ! -L "$deb" ]] || die "missing staged .deb"
-    [[ "$(dpkg-deb -f "$deb" Package)" == "$package" ]] || die "package mismatch"
-    [[ "$(dpkg-deb -f "$deb" Version)" == "$version" ]] || die "version mismatch"
-    arch="$(dpkg-deb -f "$deb" Architecture)"
+    [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || die "missing validated package SHA-256"
+    # Never run dpkg against a package still writable by the SSH user.
+    # Copy into a fresh root-owned 0600 file, then verify that exact copy.
+    verified="$(mktemp /tmp/platformctl-package-XXXXXXXX)"
+    trap 'rm -f -- "$verified"' EXIT
+    install -m 0600 -- "$deb" "$verified"
+    actual_sha="$(sha256sum -- "$verified" | cut -d' ' -f1)"
+    [[ "$actual_sha" == "$expected_sha" ]] || die "package SHA-256 changed after validation"
+    [[ "$(dpkg-deb -f "$verified" Package)" == "$package" ]] || die "package mismatch"
+    [[ "$(dpkg-deb -f "$verified" Version)" == "$version" ]] || die "version mismatch"
+    arch="$(dpkg-deb -f "$verified" Architecture)"
     [[ "$arch" == all || "$arch" == "$(dpkg --print-architecture)" ]] || die "architecture mismatch"
     [[ -z "$(package_version)" ]] || die "dpkg installed package but release missing"
-    dpkg -i -- "$deb"
+    dpkg -i -- "$verified"
+    rm -f -- "$verified"
+    trap - EXIT
     check_ready
     printf '%s: installed %s\n' "$name" "$version"
     ;;
