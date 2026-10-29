@@ -20,3 +20,7 @@ class ApplyError(PlatformCtlError):
 
 class PackageError(PlatformCtlError):
     """Acquiring, checking or installing a Debian release failed."""
+
+
+class DesktopError(PlatformCtlError):
+    """XDG desktop launcher validation or installation failed."""
