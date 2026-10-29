@@ -35,6 +35,15 @@ _COMMANDS = {"status", "diff", "check", "install", "apply", "rollback", "list-re
 _MAX_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024
 
 
+def _sha256(path: Path) -> str:
+    """Streaming checksum compatible with Python 3.10 and newer."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True)
 class HostResult:
     host: str
@@ -113,8 +122,7 @@ class SSHTransport:
             ["sh", "-c", 'umask 077; cat > "$1"', "sh", destination],
             file=file, timeout=3600,
         )
-        with file.open("rb") as stream:
-            expected = hashlib.file_digest(stream, "sha256").hexdigest()
+        expected = _sha256(file)
         checksum = self.require(host, ["sha256sum", "--", destination]).split()[0]
         if checksum != expected:
             raise OrchestrationError(
@@ -270,8 +278,7 @@ class Orchestrator:
         arch = self.transport.require(host, ["dpkg", "--print-architecture"])
         with tempfile.TemporaryDirectory(prefix="platformctl-inspect-") as directory:
             self.packages._inspect(spec, local_copy, Path(directory), target_arch=arch)
-        with local_copy.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        digest = _sha256(local_copy)
         return dest, digest
 
     def _remote_one(
