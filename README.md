@@ -1,8 +1,9 @@
 # platformctl
 
-`platformctl` is a small deployment controller for native Linux applications that must
-run directly on the host (for example applications accessing GPIO, serial, I2C,
-SPI, PCIe or other hardware).
+`platformctl` is a small deployment controller for native Linux applications
+(systemd services and desktop GUI applications) that must run directly on the
+host (for example applications accessing GPIO, serial, I2C, SPI, PCIe or other
+hardware).
 
 It deliberately does **not** replace systemd. CI/CD publishes immutable,
 version-specific Debian packages or pre-deploys release directories. `platformctl`
@@ -65,6 +66,93 @@ With no service-level `root`, the managed root defaults to
 
 `enabled: true|false` is also supported as a shorthand for the common
 combination of runtime state and boot autostart.
+
+## Application types: systemd service or desktop GUI
+
+Each software is **either** a systemd service or a desktop application.
+The manifest key remains `services` for schema 1 backwards compatibility.
+`type` is optional and defaults to `service`; all existing manifests are valid.
+
+```yaml
+schema: 1
+platform:
+  root: /opt/platform
+  source: http://nexus.lan:8081/repository/native-releases/
+services:
+  controller:
+    type: service
+    version: 2.5.5-build184
+    root: /opt/ControllerSoftware
+    source: controller/
+    service_name: controller.service
+    service_file: ./services/controller.service
+    state: running
+    autostart: true
+
+  briefcase:
+    type: desktop
+    version: 261028.custom-ubuntu2404-x8664-00001-b1c7221
+    root: /opt/VMLRS/BriefcaseSoftware
+    source: briefcase/
+    desktop_file: ./desktops/VmlrsBriefcaseSoftware.desktop
+```
+
+Desktop applications **require** `desktop_file` pointing to a complete XDG
+desktop launcher. They cannot set `service_name`, `service_file`, `state`,
+`autostart`, `enabled` or `install_path`. A desktop may have a preinstalled
+**managed release** (omit `source`), but not a legacy `install_path` in this MVP.
+Only one managed software may own a given desktop filename.
+
+An example full XDG launcher (the executable and icon paths below must match
+your actual release payload):
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=VMLRS Briefcase Software
+Exec=/opt/VMLRS/BriefcaseSoftware/current/software/bin/launch.sh
+Path=/opt/VMLRS/BriefcaseSoftware/current/software/bin
+Icon=/opt/VMLRS/BriefcaseSoftware/current/software/icons/briefcase.svg
+Terminal=false
+Categories=Utility;
+```
+
+Use a **stable `<root>/current` path** in the launcher rather than hardcoding
+a version directory. If privilege handling (e.g. `pkexec`) or a Qt environment
+is needed, encapsulate it in an application-owned launcher script; platformctl
+does not execute or interpret `Exec`. In desktop entries, `Version` describes
+the desktop entry **format version**, not your software build version.
+
+`platformctl install` and `check` share the same release and .deb handling
+for both types. `apply` for desktop apps changes `current` and atomically
+registers/updates a system-wide launcher under
+`/usr/local/share/applications/<desktop filename>`, with best-effort
+restoration of both launcher and symlinks if the operation fails. The supplied
+filename must match the desired XDG desktop ID (for example, to override a
+vendor launcher in `/usr/share/applications`). If launcher content has not
+changed, it is not rewritten. `rollback` switches `current` only.
+
+**Desktop processes are never started, stopped or restarted by platformctl.**
+Already-open windows may continue running the old version until closed;
+new launches through the stable `current` path use the selected version.
+For desktop apps, `status` shows launcher registration state
+(`registered`, `missing` or `outdated`), **not** a GUI process state.
+`diff` reports both version drift and launcher changes. No desktop session
+is required for validating, installing or registering the system-wide launcher.
+
+The desktop validation in this MVP checks the required `[Desktop Entry]`,
+`Type=Application`, `Name` and `Exec` fields; it is **not a full**
+freedesktop.org specification validator. For stricter checks, use
+`desktop-file-validate` on a desktop-equipped development machine.
+Session autostart and desktop-app process management are out of scope.
+
+**Packaging convention:** desktop `.deb` packages follow the same
+`<root>/<version>` immutable payload rule as services. Do not bundle
+`/usr/share/applications/*.desktop`, shared icons or automatic startup
+scripts in the versioned `.deb`, because installation must **not**
+alter the active GUI launcher. Place versioned icons and resources inside
+the release and use `current` paths in the separate launcher file.
+
 
 ## Optional source: install without activation
 
