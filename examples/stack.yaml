@@ -41,3 +41,11 @@ services:
     service_name: legacyApp.service
     state: running
     autostart: true
+
+  # Desktop GUI: no systemd unit; new launches follow /opt/BriefcaseSoftware/current
+  briefcase:
+    type: desktop
+    version: 1.2.0
+    root: /opt/BriefcaseSoftware
+    source: briefcase/
+    desktop_file: ./briefcase.desktop
