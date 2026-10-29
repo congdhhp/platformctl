@@ -24,3 +24,7 @@ class PackageError(PlatformCtlError):
 
 class DesktopError(PlatformCtlError):
     """XDG desktop launcher validation or installation failed."""
+
+
+class OrchestrationError(PlatformCtlError):
+    """Multi-host plan, SSH execution, or artifact transfer failed."""
