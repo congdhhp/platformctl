@@ -16,7 +16,7 @@ _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+~-]*$")
 _SERVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:+-]*[.]service$")
 _TOP_LEVEL_KEYS = {"schema", "platform", "services"}
 _PLATFORM_KEYS = {"root", "source"}
-_SERVICE_KEYS = {"version", "source", "service_name", "service_file", "root", "install_path", "state", "autostart", "enabled", "type", "desktop_file"}
+_SERVICE_KEYS = {"version", "source", "service_name", "service_file", "root", "install_path", "state", "autostart", "enabled", "type", "desktop_file", "hosts", "source_location"}
 
 
 def _mapping(value: Any, where: str) -> Mapping[str, Any]:
@@ -166,6 +166,30 @@ def load_manifest(
                 f"services.{name}.version conflicts with a managed directory name: {version!r}"
             )
 
+        selectors = spec.get("hosts")
+        if selectors is not None:
+            if isinstance(selectors, str):
+                selectors = (selectors,)
+            elif isinstance(selectors, list) and selectors:
+                selectors = tuple(selectors)
+            else:
+                raise ManifestError(f"services.{name}.hosts must be a host/group or nonempty list")
+            if any(not isinstance(x, str) or not _NAME_RE.fullmatch(x) for x in selectors):
+                raise ManifestError(f"services.{name}.hosts contains invalid selectors")
+            if len(set(selectors)) != len(selectors):
+                raise ManifestError(f"services.{name}.hosts contains duplicate selectors")
+
+        source_location = spec.get("source_location")
+        if source_location is not None:
+            if source_location not in {"controller", "target"} or not isinstance(source_location, str):
+                raise ManifestError(f"services.{name}.source_location must be controller or target")
+            if "source" not in spec:
+                raise ManifestError(f"services.{name}.source_location requires source")
+            if source_location == "target" and not str(spec["source"]).startswith(("http://", "https://", "/")):
+                raise ManifestError(
+                    f"services.{name}: target-local source must be absolute"
+                )
+
         source = None
         if "source" in spec:
             if install_path is not None:
@@ -197,6 +221,8 @@ def load_manifest(
             source=source,
             type=software_type,
             desktop_file=desktop_file,
+            hosts=selectors,
+            source_location=source_location,
             root=root,
             install_path=install_path,
             state=state,
