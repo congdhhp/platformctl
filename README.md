@@ -113,29 +113,44 @@ directly. For SSH targets, configuration files are transferred into a private
 `/tmp/platformctl-XXXXXXXX/` workspace with verified SHA-256; local/controller
 artifacts are only uploaded by the `install` command. Uploaded launcher files
 retain the original `.desktop` filename (their XDG desktop ID). After the
-remote command, staging is removed. Remote HTTP sources are not proxied
-unless `source_location: controller` is set.
+remote command, staging is removed. For HTTP downloaded at the target, the artifact is streamed back to the
+controller for **package inspection** before the target performs `dpkg -i`.
+This adds transfer overhead but preserves the existing script-free,
+version-scoped Debian payload checks without Python on the remote host.
 
 ### Remote prerequisites and safety
 
-- Remote hosts must already have the **same platformctl version** installed
-  in the SSH user's PATH and the sudo `secure_path` for mutating commands.
-  Auto-bootstrap of the binary is **not yet supported**.
-- Set up OpenSSH keys/agent, `known_hosts`, and required `sudo -n` permissions.
-  Strict host key checking and noninteractive authentication are enabled.
-  The controller should run unprivileged; mutating commands on a local host
-  use `sudo -n` when necessary. Restrict privileged deployment permissions.
-- Remote executor is invoked through SSH; it still uses local `dpkg`,
-  `systemd` and `.desktop` lifecycle logic. It does not run a daemon.
-- On multi-host `apply`, every selected host first runs `check`. If any
-  is not ready, **no host is activated**. Activation across hosts is still
-  **not atomic**; failures after preflight can leave partial deployments.
-  No automated cross-host rollback, rolling health checks or journal yet.
-- Raw output is grouped by host; JSON output/centralized execution logs are
-  future enhancements. For large files, upload streams over OpenSSH stdin
-  (not a resident agent). No Ansible dependency.
-- Do not put secrets in the inventory. SSH targets must have network access to
-  HTTP URLs whenever they download artifacts directly.
+- **Only the controller installs platformctl**. Targets do **not** need the
+  platformctl binary, Python, a platformctl daemon or an Ansible runtime.
+- Remote hosts require OpenSSH server, **Bash**, `dpkg`, `dpkg-deb`, standard
+  Linux coreutils, `sha256sum` and `realpath`; service hosts also require
+  `systemctl`. HTTP target downloads additionally require `curl`.
+- The controller needs `dpkg-deb` to inspect downloaded or streamed .deb
+  payloads. Package architecture is compared against the **target host**.
+  Package metadata, scripts/triggers, and version-root payload restrictions
+  are validated **before** any remote `dpkg -i`.
+- Set up OpenSSH keys/agent, verified `known_hosts`, and
+  `sudo -n bash -s` privilege escalation for install/apply/rollback.
+  This grants substantial root capability; use a dedicated, trusted deploy
+  account. Do **not** expose the SSH credentials or inventory to untrusted users.
+- The controller streams its Bash lifecycle worker through SSH **stdin**
+  for each operation. No helper executable, Python package or service is
+  installed permanently on the target. Local operations use the existing
+  platformctl Engine directly without SSH to self.
+- On multi-host `apply`, every selected host first runs `check`, then
+  a privilege preflight. If any host fails readiness or permissions, **no
+  host is activated**. Activation itself is not a distributed transaction;
+  cross-host automatic rollback, resume and deployment journals are not yet
+  implemented.
+- A host may change several software sequentially. If an operation fails,
+  the worker attempts local link/service/launcher restoration, but completed
+  software on other hosts are not automatically rolled back. Validate staging,
+  rollback, systemd and GUI behavior on test machines before production use.
+- For target-local files, the SSH account must be able to read the artifact
+  for controller-side inspection. Local source paths are resolved on the
+  controller, including with an explicit project directory.
+- Output is grouped by host; machine-readable JSON, rolling health checks and
+  advanced dry-run verification are follow-up features.
 
 Full runnable-layout examples:
 `examples/inventory.yaml` and `examples/multi-host-stack.yaml`.
