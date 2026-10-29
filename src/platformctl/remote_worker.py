@@ -185,7 +185,9 @@ case "$action" in
     printf '%s: installed %s\n' "$name" "$version"
     ;;
   apply|rollback)
-    check_ready
+    # Rollback must remain available even when the desired release is missing.
+    if [[ "$action" == apply ]]; then check_ready
+    else validate_links; fi
     [[ "$managed" == 1 || "$action" == apply ]] || die "external rollback unsupported"
     if [[ "$action" == rollback ]]; then
       validate_links
