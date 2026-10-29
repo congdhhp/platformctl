@@ -23,6 +23,8 @@ class ServiceSpec:
     source: str | None = None
     type: SoftwareType = "service"
     desktop_file: Path | None = None
+    hosts: tuple[str, ...] | None = None
+    source_location: str | None = None
 
     def __post_init__(self) -> None:
         if (self.root is None) == (self.install_path is None):
