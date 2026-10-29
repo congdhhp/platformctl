@@ -196,7 +196,12 @@ def load_manifest(
                 raise ManifestError(
                     f"services.{name}.source is unsupported with install_path"
                 )
-            source = normalize_service_source(spec["source"], base, global_source)
+            # A target-local absolute path belongs to the target filesystem:
+            # never resolve its symlinks or existence on the controller.
+            if source_location == "target" and str(spec["source"]).startswith("/"):
+                source = spec["source"]
+            else:
+                source = normalize_service_source(spec["source"], base, global_source)
             resolve_source(name, version, source)
 
         if "enabled" in spec:
