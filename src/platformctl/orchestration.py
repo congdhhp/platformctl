@@ -1,8 +1,8 @@
-"""Agentless multi-host orchestration, reusing the existing local CLI/Engine.
+"""Controller-only agentless orchestration over OpenSSH.
 
-The controller never performs remote dpkg/systemd changes via ad-hoc shell:
-it securely stages a single-host manifest, then runs the matching platformctl
-version on the target. OpenSSH handles host-key and SSH-agent authentication.
+Remote Linux nodes require Bash, dpkg, systemctl (for service targets) and
+coreutils, but neither Python nor a platformctl installation. The Bash worker
+is streamed over stdin for each operation and is never left on target disks.
 """
 from __future__ import annotations
 
@@ -19,19 +19,20 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
-from . import __version__
 from .artifacts import artifact_for
+from .desktop_files import DesktopFileManager
 from .errors import OrchestrationError
 from .inventory import Host
 from .models import ServiceSpec, StackManifest
-from .packages import PackageManager
+from .packages import PackageManager, expected_package_name
 from .planner import Target
+from .remote_worker import WORKER
+from .unit_files import UnitFileManager
 
 _WORKSPACE = re.compile(r"^/tmp/platformctl-[A-Za-z0-9]+$")
 _MUTATING = {"install", "apply", "rollback"}
-_COMMANDS = {"validate", "status", "diff", "check", "install", "apply", "rollback", "list-releases"}
+_COMMANDS = {"status", "diff", "check", "install", "apply", "rollback", "list-releases"}
+_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -44,39 +45,50 @@ class HostResult:
 
 
 class SSHTransport:
-    """Strict, non-interactive OpenSSH transport; arguments never enter shell unquoted."""
+    """Non-interactive OpenSSH; never interpolate config values into shell code."""
 
     def _ssh(self, host: Host) -> list[str]:
-        assert host.connection == "ssh" and host.address is not None
-        command = [
+        assert host.connection == "ssh" and host.address
+        args = [
             "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
             "-o", "ConnectTimeout=10", "-p", str(host.port),
         ]
         if host.user:
-            command += ["-l", host.user]
-        return command + [host.address]
+            args += ["-l", host.user]
+        return args + [host.address]
 
-    def run(self, host: Host, argv: list[str], file: Path | None = None) -> HostResult:
-        cmd = self._ssh(host) + [shlex.join(argv)]
+    def run(
+        self, host: Host, argv: list[str], file: Path | None = None,
+        *, stdin: bytes | None = None, timeout: int = 600,
+    ) -> HostResult:
+        if file is not None and stdin is not None:
+            raise OrchestrationError("file and stdin cannot be supplied together")
+        command = self._ssh(host) + [shlex.join(argv)]
         try:
-            if file is None:
-                result = subprocess.run(cmd, capture_output=True, check=False, timeout=600)
-            else:
-                with file.open("rb") as stream:
-                    result = subprocess.run(
-                        cmd, stdin=stream, stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE, check=False, timeout=3600,
+            if file is not None:
+                with file.open("rb") as input_file:
+                    process = subprocess.run(
+                        command, stdin=input_file, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, check=False, timeout=timeout,
                     )
+            else:
+                process = subprocess.run(
+                    command, input=stdin, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, check=False, timeout=timeout,
+                )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise OrchestrationError(f"{host.name}: SSH failed: {exc}") from exc
+            raise OrchestrationError(f"{host.name}: SSH command failed: {exc}") from exc
         return HostResult(
-            host.name, argv[0], result.returncode,
-            result.stdout.decode(errors="replace"),
-            result.stderr.decode(errors="replace"),
+            host.name, argv[0], process.returncode,
+            process.stdout.decode(errors="replace"),
+            process.stderr.decode(errors="replace"),
         )
 
-    def require(self, host: Host, argv: list[str], file: Path | None = None) -> str:
-        result = self.run(host, argv, file)
+    def require(
+        self, host: Host, argv: list[str], file: Path | None = None,
+        *, stdin: bytes | None = None, timeout: int = 600,
+    ) -> str:
+        result = self.run(host, argv, file, stdin=stdin, timeout=timeout)
         if result.code:
             raise OrchestrationError(
                 f"{host.name}: remote command failed ({result.code}): "
@@ -85,23 +97,72 @@ class SSHTransport:
         return result.output.strip()
 
     def workspace(self, host: Host) -> str:
-        remote = self.require(host, ["mktemp", "-d", "/tmp/platformctl-XXXXXXXX"])
-        if not _WORKSPACE.fullmatch(remote):
-            raise OrchestrationError(f"{host.name}: invalid remote staging directory: {remote!r}")
-        return remote
+        path = self.require(host, ["mktemp", "-d", "/tmp/platformctl-XXXXXXXX"])
+        if not _WORKSPACE.fullmatch(path):
+            raise OrchestrationError(
+                f"{host.name}: unsafe remote staging directory: {path!r}"
+            )
+        return path
 
     def put(self, host: Host, file: Path, destination: str) -> None:
-        if not file.is_file():
-            raise OrchestrationError(f"controller file not found: {file}")
-        # The SSH user creates private files in a mode 0700 mktemp directory.
-        self.require(host, ["sh", "-c", f"umask 077; cat > {shlex.quote(destination)}"], file)
+        if not file.is_file() or file.is_symlink():
+            raise OrchestrationError(f"controller file is missing or unsafe: {file}")
+        # Private mktemp workspace is owned by the SSH user (mode 0700).
+        self.require(
+            host,
+            ["sh", "-c", 'umask 077; cat > "$1"', "sh", destination],
+            file=file, timeout=3600,
+        )
         with file.open("rb") as stream:
             expected = hashlib.file_digest(stream, "sha256").hexdigest()
-        actual = self.require(host, ["sha256sum", destination]).split()[0]
-        if actual != expected:
+        checksum = self.require(host, ["sha256sum", "--", destination]).split()[0]
+        if checksum != expected:
             raise OrchestrationError(
-                f"{host.name}: checksum mismatch for uploaded {file.name}"
+                f"{host.name}: checksum mismatch after uploading {file.name}"
             )
+
+    def get(self, host: Host, source: str, destination: Path) -> None:
+        """Stream a target-local artifact to the controller for secure inspection."""
+        command = self._ssh(host) + [shlex.join(["cat", "--", source])]
+        try:
+            with destination.open("wb") as output:
+                process = subprocess.run(
+                    command, stdout=output, stderr=subprocess.PIPE,
+                    check=False, timeout=3600,
+                )
+            if process.returncode:
+                raise OrchestrationError(
+                    f"{host.name}: reading remote artifact failed: "
+                    f"{process.stderr.decode(errors='replace').strip()}"
+                )
+            if destination.stat().st_size > _MAX_ARTIFACT_BYTES:
+                raise OrchestrationError("remote artifact exceeds maximum size")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise OrchestrationError(
+                f"{host.name}: unable to retrieve remote artifact: {exc}"
+            ) from exc
+
+    def download(self, host: Host, url: str, destination: str) -> None:
+        # No shell-expanded URL; argv is escaped by shlex.join in run().
+        self.require(
+            host,
+            [
+                "sh", "-c",
+                'curl -fLsS --proto "=http,https" --proto-redir "=http,https" '
+                '--max-time 1800 --output "$1" "$2"',
+                "sh", destination, url,
+            ],
+            timeout=1900,
+        )
+
+    def execute(
+        self, host: Host, argv: list[str], *, privileged: bool = False
+    ) -> HostResult:
+        command = (["sudo", "-n"] if privileged and host.become else [])
+        command += ["bash", "-s", "--", *argv]
+        return self.run(
+            host, command, stdin=WORKER.encode("utf-8"), timeout=3600
+        )
 
     def cleanup(self, host: Host, workspace: str) -> None:
         if not _WORKSPACE.fullmatch(workspace):
@@ -109,49 +170,11 @@ class SSHTransport:
         self.require(host, ["rm", "-rf", "--", workspace])
 
 
-def _effective_manifest(
-    stack: StackManifest,
-    software: tuple[ServiceSpec, ...],
-    source_overrides: dict[str, str] | None = None,
-    file_overrides: dict[str, str] | None = None,
-) -> dict:
-    source_overrides = source_overrides or {}
-    file_overrides = file_overrides or {}
-    specs: dict[str, dict] = {}
-    for spec in software:
-        item: dict = {"version": spec.version, "type": spec.type}
-        if spec.root is not None:
-            item["root"] = str(spec.root)
-        else:
-            assert spec.install_path is not None
-            item["install_path"] = str(spec.install_path)
-        if spec.source is not None:
-            item["source"] = source_overrides.get(spec.name, spec.source)
-        if spec.type == "service":
-            item.update(
-                service_name=spec.service_name,
-                state=spec.state,
-                autostart=spec.autostart,
-            )
-            if spec.service_file:
-                item["service_file"] = file_overrides.get(
-                    spec.name, str(spec.service_file)
-                )
-        else:
-            assert spec.desktop_file is not None
-            item["desktop_file"] = file_overrides.get(
-                spec.name, str(spec.desktop_file)
-            )
-        specs[spec.name] = item
-    # Global source is already resolved on the controller. Never reinterpret it
-    # against a remote working directory or copy placement fields to a target.
-    return {"schema": stack.schema, "platform": {"root": str(stack.platform_root)},
-            "services": specs}
-
-
-def _local_command(host: Host, command: str, manifest: Path, software: str | None) -> HostResult:
+def _local_command(
+    host: Host, command: str, manifest: Path, software: str | None
+) -> HostResult:
     argv = [command, "-f", str(manifest)]
-    if software is not None:
+    if software:
         argv.insert(1, software)
     if command in _MUTATING and host.become and os.geteuid() != 0:
         executable = (
@@ -159,153 +182,208 @@ def _local_command(host: Host, command: str, manifest: Path, software: str | Non
             else [sys.executable, "-m", "platformctl.cli"]
         )
         try:
-            run = subprocess.run(
-                ["sudo", "-n", *executable, *argv], capture_output=True, text=True,
-                check=False, timeout=3600,
+            result = subprocess.run(
+                ["sudo", "-n", *executable, *argv],
+                capture_output=True, text=True, check=False, timeout=3600,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise OrchestrationError(f"{host.name}: local sudo execution failed: {exc}") from exc
-        return HostResult(host.name, command, run.returncode, run.stdout, run.stderr)
+            raise OrchestrationError(
+                f"{host.name}: local sudo execution failed: {exc}"
+            ) from exc
+        return HostResult(
+            host.name, command, result.returncode, result.stdout, result.stderr
+        )
 
-    # Local means a direct Python CLI/Engine call, not SSH to our own host.
     from .cli import main
-
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    output, errors = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
         code = main(argv)
-    return HostResult(host.name, command, code, out.getvalue(), err.getvalue())
+    return HostResult(host.name, command, code, output.getvalue(), errors.getvalue())
 
 
-def _remote_command(
-    host: Host, command: str, manifest: str, software: str | None
-) -> list[str]:
-    argv = ["platformctl", command]
-    if software is not None:
-        argv.append(software)
-    argv += ["-f", manifest]
-    if host.become and command in _MUTATING:
-        argv = ["sudo", "-n", *argv]
-    return argv
+def _local_manifest(stack: StackManifest, target: Target, folder: Path) -> Path:
+    """Local controller calls existing Engine, with original resolved paths."""
+    import yaml
+    specs = {}
+    for spec in target.software:
+        obj = {"version": spec.version, "type": spec.type}
+        if spec.managed:
+            obj["root"] = str(spec.root)
+        else:
+            obj["install_path"] = str(spec.install_path)
+        if spec.source is not None:
+            obj["source"] = spec.source
+        if spec.type == "desktop":
+            obj["desktop_file"] = str(spec.desktop_file)
+        else:
+            obj.update(
+                service_name=spec.service_name,
+                state=spec.state,
+                autostart=spec.autostart,
+            )
+            if spec.service_file:
+                obj["service_file"] = str(spec.service_file)
+        specs[spec.name] = obj
+    path = folder / "stack.yaml"
+    path.write_text(
+        yaml.safe_dump({
+            "schema": stack.schema,
+            "platform": {"root": str(stack.platform_root)},
+            "services": specs,
+        }),
+        encoding="utf-8",
+    )
+    return path
 
 
 class Orchestrator:
     def __init__(self, transport: SSHTransport | None = None) -> None:
         self.transport = transport or SSHTransport()
+        self.packages = PackageManager()
+
+    def _artifact(
+        self, host: Host, spec: ServiceSpec, staging: str, scratch: Path
+    ) -> str:
+        location = artifact_for(spec)
+        mode = spec.source_location or (
+            "target" if location.remote else "controller"
+        )
+        dest = f"{staging}/{spec.name}.deb"
+        local_copy = scratch / f"{spec.name}.deb"
+        if mode == "controller":
+            if location.remote:
+                self.packages._download(location.location, local_copy)
+            else:
+                local_copy = Path(location.location)
+            self.transport.put(host, local_copy, dest)
+        elif location.remote:
+            self.transport.download(host, location.location, dest)
+            self.transport.get(host, dest, local_copy)
+        else:
+            # Existing target-local path: inspect without overwriting it.
+            dest = location.location
+            self.transport.get(host, dest, local_copy)
+
+        size = local_copy.stat().st_size
+        if size > _MAX_ARTIFACT_BYTES:
+            raise OrchestrationError(f"{spec.name}: artifact exceeds maximum size")
+        arch = self.transport.require(host, ["dpkg", "--print-architecture"])
+        with tempfile.TemporaryDirectory(prefix="platformctl-inspect-") as directory:
+            self.packages._inspect(spec, local_copy, Path(directory), target_arch=arch)
+        return dest
+
+    def _remote_one(
+        self, host: Host, spec: ServiceSpec, command: str, workspace: str,
+        scratch: Path,
+    ) -> HostResult:
+        unit_file = ""
+        desktop_file = ""
+        if spec.type == "desktop":
+            DesktopFileManager.validate_source(spec)
+            assert spec.desktop_file is not None
+            desktop_file = f"{workspace}/{spec.desktop_file.name}"
+            self.transport.put(host, spec.desktop_file, desktop_file)
+        elif spec.service_file:
+            UnitFileManager.validate_source(spec)
+            unit_file = f"{workspace}/{spec.name}.service"
+            self.transport.put(host, spec.service_file, unit_file)
+
+        package = expected_package_name(spec) if spec.source is not None else ""
+        deb = ""
+        if command == "install" and spec.source is not None:
+            # Do not fetch a huge artifact if the desired release is already ready.
+            preliminary = self._worker(
+                host, spec, "check", unit_file, desktop_file, "", package
+            )
+            if preliminary.code == 0:
+                return HostResult(host.name, "install", 0,
+                                  f"{spec.name}: already installed\n")
+            deb = self._artifact(host, spec, workspace, scratch)
+        return self._worker(
+            host, spec, command, unit_file, desktop_file, deb, package
+        )
+
+    def _worker(
+        self, host: Host, spec: ServiceSpec, command: str,
+        unit_file: str, desktop_file: str, deb: str, package: str,
+    ) -> HostResult:
+        argv = [
+            command, spec.name, spec.version, spec.type,
+            str(spec.root if spec.managed else spec.install_path),
+            "1" if spec.managed else "0",
+            spec.service_name, spec.state,
+            "true" if spec.autostart else "false",
+            unit_file, desktop_file, deb, package,
+            "1" if spec.source is not None else "0",
+        ]
+        return self.transport.execute(
+            host, argv, privileged=command in _MUTATING
+        )
 
     def _host(
-        self, stack: StackManifest, target: Target, command: str,
-        software: str | None = None,
+        self, stack: StackManifest, target: Target,
+        command: str, software: str | None = None,
     ) -> HostResult:
         host = target.host
         host.verify_local()
         if command not in _COMMANDS:
-            raise OrchestrationError(f"unsupported remote command: {command}")
-        if host.connection == "ssh":
-            reported = self.transport.require(host, ["platformctl", "--version"])
-            if reported != f"platformctl {__version__}":
-                raise OrchestrationError(
-                    f"{host.name}: executor version mismatch: {reported!r}; "
-                    f"required platformctl {__version__}"
-                )
-
-        with tempfile.TemporaryDirectory(prefix="platformctl-controller-") as tmp:
-            scratch = Path(tmp)
+            raise OrchestrationError(f"unsupported command: {command}")
+        with tempfile.TemporaryDirectory(prefix="platformctl-controller-") as directory:
+            scratch = Path(directory)
             if host.connection == "local":
-                # Local execution can read the controller's existing sources and
-                # configuration files directly, with no transfer or staging.
-                filename = scratch / "stack.yaml"
-                filename.write_text(
-                    yaml.safe_dump(_effective_manifest(stack, target.software)),
-                    encoding="utf-8",
-                )
+                filename = _local_manifest(stack, target, scratch)
                 return _local_command(host, command, filename, software)
 
             workspace = self.transport.workspace(host)
             try:
-                source_overrides: dict[str, str] = {}
-                file_overrides: dict[str, str] = {}
+                outputs: list[str] = []
                 for spec in target.software:
-                    if spec.service_file or spec.desktop_file:
-                        source = spec.service_file or spec.desktop_file
-                        assert source is not None
-                        # DesktopFileManager installs based on source filename:
-                        # preserve the XDG desktop ID rather than staging under
-                        # a generated name.
-                        if spec.type == "desktop":
-                            destination = f"{workspace}/{source.name}"
-                        else:
-                            destination = f"{workspace}/config-{spec.name}{source.suffix}"
-                        self.transport.put(host, source, destination)
-                        file_overrides[spec.name] = destination
-                    if spec.source is None:
+                    if software and spec.name != software:
                         continue
-                    location = artifact_for(spec)
-                    source_at = spec.source_location or (
-                        "target" if location.remote else "controller"
+                    result = self._remote_one(
+                        host, spec, command, workspace, scratch
                     )
-                    if source_at == "target":
-                        # Already a resolvable absolute URL or target-local path.
-                        continue
-                    destination = f"{workspace}/artifact-{spec.name}.deb"
-                    source_overrides[spec.name] = destination
-                    if command != "install":
-                        # Only the source flag is needed for dpkg registration
-                        # checks. Do not transfer artifacts for status/apply.
-                        continue
-                    if location.remote:
-                        downloaded = scratch / f"artifact-{spec.name}.deb"
-                        PackageManager._download(location.location, downloaded)
-                        local_artifact = downloaded
-                    else:
-                        local_artifact = Path(location.location)
-                    self.transport.put(host, local_artifact, destination)
-                filename = scratch / "stack.yaml"
-                filename.write_text(
-                    yaml.safe_dump(_effective_manifest(
-                        stack, target.software, source_overrides, file_overrides,
-                    )),
-                    encoding="utf-8",
-                )
-                remote_manifest = workspace + "/stack.yaml"
-                self.transport.put(host, filename, remote_manifest)
-                result = self.transport.run(
-                    host, _remote_command(host, command, remote_manifest, software)
-                )
-                return HostResult(host.name, command, result.code, result.output, result.error)
+                    if result.output.strip():
+                        outputs.append(result.output.rstrip())
+                    if result.code:
+                        return HostResult(
+                            host.name, command, result.code,
+                            "\n".join(outputs), result.error,
+                        )
+                return HostResult(host.name, command, 0, "\n".join(outputs))
             finally:
                 self.transport.cleanup(host, workspace)
 
     def _privilege_check(self, target: Target) -> HostResult:
-        """Preflight root execution on every host before distributed activation."""
         host = target.host
         if not host.become:
             return HostResult(host.name, "sudo-preflight", 0, "no sudo requested")
         if host.connection == "local" and os.geteuid() == 0:
             return HostResult(host.name, "sudo-preflight", 0, "already root")
         if host.connection == "ssh":
-            check = self.transport.run(host, ["sudo", "-n", "platformctl", "--version"])
-        else:
-            executable = (
-                [sys.executable] if getattr(sys, "frozen", False)
-                else [sys.executable, "-m", "platformctl.cli"]
+            check = self.transport.run(
+                host, ["sudo", "-n", "bash", "-c", "true"]
             )
+        else:
             try:
                 process = subprocess.run(
-                    ["sudo", "-n", *executable, "--version"],
-                    capture_output=True, text=True, check=False, timeout=30,
+                    ["sudo", "-n", "true"], capture_output=True,
+                    text=True, check=False, timeout=30,
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
-                raise OrchestrationError(f"{host.name}: sudo preflight failed: {exc}") from exc
+                raise OrchestrationError(
+                    f"{host.name}: sudo preflight failed: {exc}"
+                ) from exc
             check = HostResult(
                 host.name, "sudo-preflight", process.returncode,
                 process.stdout, process.stderr,
             )
-        if check.code != 0 or check.output.strip() != f"platformctl {__version__}":
+        if check.code:
             raise OrchestrationError(
-                f"{host.name}: sudo -n cannot run matching platformctl: "
+                f"{host.name}: privileged execution unavailable: "
                 f"{check.error.strip() or check.output.strip()}"
             )
-        return HostResult(host.name, "sudo-preflight", 0, check.output)
+        return HostResult(host.name, "sudo-preflight", 0, "OK")
 
     def execute(
         self, stack: StackManifest, targets: tuple[Target, ...], command: str,
@@ -314,23 +392,20 @@ class Orchestrator:
         if parallel < 1 or parallel > 32:
             raise OrchestrationError("--parallel must be between 1 and 32")
         if command == "apply":
-            # No changes until all hosts pass release readiness AND sudo checks.
             checks = self.execute(stack, targets, "check", parallel=parallel)
-            if not any(result.code for result in checks):
+            if not any(r.code for r in checks):
                 def privilege(target: Target) -> HostResult:
                     try:
                         return self._privilege_check(target)
                     except Exception as exc:
                         return HostResult(target.host.name, "sudo-preflight", 2, "", str(exc))
-
-                # Avoid concurrent local preflight side-effects with other threads.
                 checks = [privilege(t) for t in targets]
-            if any(result.code for result in checks):
+            if any(r.code for r in checks):
                 return [
                     HostResult(
                         r.host, "apply", 2, "",
-                        "preflight failed: " + (r.error or r.output).strip()
-                        if r.code else "activation aborted: another host failed preflight",
+                        ("preflight failed: " + (r.error or r.output).strip())
+                        if r.code else "activation aborted: another host failed preflight"
                     ) for r in checks
                 ]
 
@@ -339,18 +414,15 @@ class Orchestrator:
                 return self._host(stack, target, command, software)
             except Exception as exc:
                 return HostResult(target.host.name, command, 2, "", str(exc))
-
         if parallel == 1:
             return [run(t) for t in targets]
-        # redirect_stdout/redirect_stderr in the in-process LocalExecutor are
-        # process-global, not thread-local. Execute the controller host first,
-        # then fan out SSH workers, preserving original inventory order.
-        completed: dict[str, HostResult] = {}
+        # Local output capture redirects process-global stdout/stderr.
+        # Execute local operations before starting SSH worker threads.
+        result: dict[str, HostResult] = {}
         for target in targets:
             if target.host.connection == "local":
-                completed[target.host.name] = run(target)
-        remote = [target for target in targets if target.host.connection == "ssh"]
+                result[target.host.name] = run(target)
+        remotes = [t for t in targets if t.host.connection == "ssh"]
         with ThreadPoolExecutor(max_workers=parallel) as pool:
-            results = list(pool.map(run, remote))
-        completed.update((result.host, result) for result in results)
-        return [completed[target.host.name] for target in targets]
+            result.update((r.host, r) for r in pool.map(run, remotes))
+        return [result[t.host.name] for t in targets]
