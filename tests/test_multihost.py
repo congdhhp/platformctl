@@ -344,6 +344,8 @@ def test_bash_worker_real_release_activation_and_rollback(tmp_path: Path):
     assert (root / "current").resolve() == root / "2.0.0"
     assert (root / "previous").resolve() == root / "1.0.0"
 
+    # A broken/new desired version must not block recovery to previous.
+    base[1] = "9.9.9"
     rolled_back = run("rollback")
     assert rolled_back.returncode == 0, rolled_back.stderr
     assert (root / "current").resolve() == root / "1.0.0"
