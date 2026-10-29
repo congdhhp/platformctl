@@ -243,7 +243,7 @@ class Orchestrator:
 
     def _artifact(
         self, host: Host, spec: ServiceSpec, staging: str, scratch: Path
-    ) -> str:
+    ) -> tuple[str, str]:
         location = artifact_for(spec)
         mode = spec.source_location or (
             "target" if location.remote else "controller"
@@ -270,7 +270,9 @@ class Orchestrator:
         arch = self.transport.require(host, ["dpkg", "--print-architecture"])
         with tempfile.TemporaryDirectory(prefix="platformctl-inspect-") as directory:
             self.packages._inspect(spec, local_copy, Path(directory), target_arch=arch)
-        return dest
+        with local_copy.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        return dest, digest
 
     def _remote_one(
         self, host: Host, spec: ServiceSpec, command: str, workspace: str,
@@ -290,6 +292,7 @@ class Orchestrator:
 
         package = expected_package_name(spec) if spec.source is not None else ""
         deb = ""
+        digest = ""
         if command == "install" and spec.source is not None:
             # Do not fetch a huge artifact if the desired release is already ready.
             preliminary = self._worker(
@@ -298,14 +301,15 @@ class Orchestrator:
             if preliminary.code == 0:
                 return HostResult(host.name, "install", 0,
                                   f"{spec.name}: already installed\n")
-            deb = self._artifact(host, spec, workspace, scratch)
+            deb, digest = self._artifact(host, spec, workspace, scratch)
         return self._worker(
-            host, spec, command, unit_file, desktop_file, deb, package
+            host, spec, command, unit_file, desktop_file, deb, package, digest
         )
 
     def _worker(
         self, host: Host, spec: ServiceSpec, command: str,
         unit_file: str, desktop_file: str, deb: str, package: str,
+        digest: str = "",
     ) -> HostResult:
         argv = [
             command, spec.name, spec.version, spec.type,
@@ -314,7 +318,7 @@ class Orchestrator:
             spec.service_name, spec.state,
             "true" if spec.autostart else "false",
             unit_file, desktop_file, deb, package,
-            "1" if spec.source is not None else "0",
+            "1" if spec.source is not None else "0", digest,
         ]
         return self.transport.execute(
             host, argv, privileged=command in _MUTATING
