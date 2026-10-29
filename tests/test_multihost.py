@@ -183,7 +183,7 @@ def test_remote_install_uploads_local_deb_and_checks_package(tmp_path: Path, mon
     assert fake.executed[-1][1][0] == "install"
     assert fake.executed[-1][2] is True
     assert fake.cleaned == [("H2", "/tmp/platformctl-12345678")]
-    assert all("platformctl" not in str(cmd[1]) for cmd in fake.executed)
+    assert all(cmd[1][0] in {"check", "install"} for cmd in fake.executed)
 
 
 def test_remote_http_downloads_at_target_then_controller_validates(tmp_path: Path, monkeypatch):
