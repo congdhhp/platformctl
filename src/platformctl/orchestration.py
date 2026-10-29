@@ -275,6 +275,38 @@ class Orchestrator:
             finally:
                 self.transport.cleanup(host, workspace)
 
+    def _privilege_check(self, target: Target) -> HostResult:
+        """Preflight root execution on every host before distributed activation."""
+        host = target.host
+        if not host.become:
+            return HostResult(host.name, "sudo-preflight", 0, "no sudo requested")
+        if host.connection == "local" and os.geteuid() == 0:
+            return HostResult(host.name, "sudo-preflight", 0, "already root")
+        if host.connection == "ssh":
+            check = self.transport.run(host, ["sudo", "-n", "platformctl", "--version"])
+        else:
+            executable = (
+                [sys.executable] if getattr(sys, "frozen", False)
+                else [sys.executable, "-m", "platformctl.cli"]
+            )
+            try:
+                process = subprocess.run(
+                    ["sudo", "-n", *executable, "--version"],
+                    capture_output=True, text=True, check=False, timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise OrchestrationError(f"{host.name}: sudo preflight failed: {exc}") from exc
+            check = HostResult(
+                host.name, "sudo-preflight", process.returncode,
+                process.stdout, process.stderr,
+            )
+        if check.code != 0 or check.output.strip() != f"platformctl {__version__}":
+            raise OrchestrationError(
+                f"{host.name}: sudo -n cannot run matching platformctl: "
+                f"{check.error.strip() or check.output.strip()}"
+            )
+        return HostResult(host.name, "sudo-preflight", 0, check.output)
+
     def execute(
         self, stack: StackManifest, targets: tuple[Target, ...], command: str,
         *, software: str | None = None, parallel: int = 1,
@@ -282,14 +314,23 @@ class Orchestrator:
         if parallel < 1 or parallel > 32:
             raise OrchestrationError("--parallel must be between 1 and 32")
         if command == "apply":
-            # Every target must have desired releases before *any* activation.
+            # No changes until all hosts pass release readiness AND sudo checks.
             checks = self.execute(stack, targets, "check", parallel=parallel)
+            if not any(result.code for result in checks):
+                def privilege(target: Target) -> HostResult:
+                    try:
+                        return self._privilege_check(target)
+                    except Exception as exc:
+                        return HostResult(target.host.name, "sudo-preflight", 2, "", str(exc))
+
+                # Avoid concurrent local preflight side-effects with other threads.
+                checks = [privilege(t) for t in targets]
             if any(result.code for result in checks):
                 return [
                     HostResult(
                         r.host, "apply", 2, "",
                         "preflight failed: " + (r.error or r.output).strip()
-                        if r.code else "activation aborted: another host is not ready",
+                        if r.code else "activation aborted: another host failed preflight",
                     ) for r in checks
                 ]
 
