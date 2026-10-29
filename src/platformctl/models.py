@@ -55,3 +55,5 @@ class StackManifest:
     schema: int
     platform_root: Path
     services: dict[str, ServiceSpec]
+    project_directory: Path | None = None
+    global_source: str | None = None

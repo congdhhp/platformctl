@@ -68,7 +68,73 @@ combination of runtime state and boot autostart.
 
 ## Optional source: install without activation
 
-A managed service may specify a single optional `source` string:
+A stack may define a shared `platform.source` base directory (local or HTTP(S))
+and each managed service may specify its own optional `source` string:
+
+```yaml
+schema: 1
+platform:
+  root: /opt/platform
+  source: http://nexus.lan:8081/repository/native-releases/
+services:
+  controller:
+    version: 2.5.5-build184
+    root: /opt/ControllerSoftware
+    source: controller/
+    service_name: controller.service
+  mission:
+    version: 3.1.0-build73
+    source: mission/3.1.0-build73/mission.deb
+  offline:
+    version: 1.2.0
+    source: /mnt/offline/radar/
+```
+
+The controller source resolves to
+`http://nexus.lan:8081/repository/native-releases/controller/2.5.5-build184/controller-2.5.5-build184.deb`;
+mission refers directly to the indicated `.deb`, and offline overrides the
+global source with an absolute local directory. No source is inherited when
+a service omits its `source` field.
+
+A global source must end in `/` and must be a directory. It may itself be a
+relative local directory such as `./native-releases/` and is then resolved
+against the **project directory**. Absolute service URLs and absolute local paths
+override the global base. Relative service sources are appended to the global
+base if supplied, otherwise resolved against the project directory.
+
+`./controller/` and `controller/` mean exactly the same thing; `./` does
+not bypass the global base. Relative service source paths containing `..` are
+rejected when a global source is configured, preventing escape from the shared
+repository. Existing manifests without `platform.source` continue to allow
+relative parent paths as before.
+
+### Project directory (Docker Compose-style)
+
+By default, the project directory is the directory containing the manifest,
+**not** the shell's current working directory. With
+
+```bash
+cd /home/dev
+platformctl validate -f /opt/deployment/stack.yaml
+```
+
+a local `source: ./packages/controller/` (without global source) resolves to
+`/opt/deployment/packages/controller/`. An explicit project directory overrides
+that base across **all commands** and local file references such as
+`service_file`:
+
+```bash
+platformctl install -f /opt/deployment/stack.yaml --project-directory /home/dev
+platformctl validate -f /opt/deployment/stack.yaml --show-sources
+```
+
+Relative arguments to `--project-directory` are resolved from the shell's
+current directory. `validate --show-sources` prints the project directory,
+resolved global source and each service's final artifact path without accessing
+the network or installing files.
+
+A directory source is resolved using the versioned artifact naming convention,
+while a file source ending in `.deb` is used exactly as specified.
 
 ```yaml
 services:
@@ -84,7 +150,7 @@ Supported source forms:
 
 - **Direct .deb**: `https://nexus.lan/releases/controller.deb` or `/mnt/packages/controller.deb`.
 - **Directory** (trailing slash required): `https://nexus.lan/releases/controller/` or `/mnt/packages/controller/`. The resolved artifact is exactly `<source>/<version>/<service>-<version>.deb`.
-- Relative local paths are resolved from the `stack.yaml` directory.
+- Relative local paths are resolved from the project directory (by default the `stack.yaml` directory); `--project-directory` overrides it.
 - Nexus Raw repositories work as ordinary HTTP(S) sources. No Nexus search API or APT integration is required. HTTP without TLS provides **no transport integrity**; only use trusted internal sources. Remote authentication and signed/checksum-verified artifacts are not implemented yet.
 
 `source` is optional; installations previously deployed by other means remain supported. It is not supported for the external `install_path` mode.
@@ -92,7 +158,7 @@ Supported source forms:
 ### Preparation workflow
 
 ```bash
-platformctl validate -f stack.yaml
+platformctl validate -f stack.yaml --show-sources
 sudo platformctl install -f stack.yaml
 platformctl check -f stack.yaml
 # When the deployment is approved:
@@ -146,7 +212,8 @@ release provenance before installation.
 field is not accepted.
 
 `service_file` is optional. It points to a **complete** systemd `.service`
-file, resolved relative to the directory containing `stack.yaml`:
+file, resolved relative to the project directory (the directory containing
+`stack.yaml` by default):
 
 ```yaml
 services:

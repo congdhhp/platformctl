@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from .artifacts import resolve_source
+from .artifacts import normalize_global_source, normalize_service_source, resolve_source
 from .errors import ManifestError
 from .models import ServiceSpec, StackManifest
 from .release import is_version_name
@@ -15,7 +15,7 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+~-]*$")
 _SERVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:+-]*[.]service$")
 _TOP_LEVEL_KEYS = {"schema", "platform", "services"}
-_PLATFORM_KEYS = {"root"}
+_PLATFORM_KEYS = {"root", "source"}
 _SERVICE_KEYS = {"version", "source", "service_name", "service_file", "root", "install_path", "state", "autostart", "enabled"}
 
 
@@ -46,8 +46,17 @@ def _bool(value: Any, where: str) -> bool:
     return value
 
 
-def load_manifest(path: str | Path) -> StackManifest:
-    manifest_path = Path(path)
+def load_manifest(
+    path: str | Path, project_directory: str | Path | None = None
+) -> StackManifest:
+    manifest_path = Path(path).resolve()
+    base = (
+        Path(project_directory).resolve()
+        if project_directory is not None
+        else manifest_path.parent
+    )
+    if not base.is_dir():
+        raise ManifestError(f"project directory does not exist: {base}")
     try:
         raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -67,6 +76,11 @@ def load_manifest(path: str | Path) -> StackManifest:
     platform = _mapping(top.get("platform", {}), "platform")
     _reject_unknown(platform, _PLATFORM_KEYS, "platform")
     platform_root = _absolute_path(platform.get("root", "/opt/platform"), "platform.root")
+    global_source = (
+        normalize_global_source(platform["source"], base)
+        if "source" in platform
+        else None
+    )
 
     services_raw = _mapping(top.get("services"), "services")
     if not services_raw:
@@ -98,7 +112,7 @@ def load_manifest(path: str | Path) -> StackManifest:
             candidate = Path(file_value)
             service_file = (
                 candidate if candidate.is_absolute()
-                else manifest_path.resolve().parent / candidate
+                else base / candidate
             ).resolve()
 
         if "root" in spec and "install_path" in spec:
@@ -122,27 +136,12 @@ def load_manifest(path: str | Path) -> StackManifest:
 
         source = None
         if "source" in spec:
-            raw_source = spec["source"]
-            if not isinstance(raw_source, str) or not raw_source.strip():
-                raise ManifestError(f"services.{name}.source must be a non-empty string")
             if install_path is not None:
                 raise ManifestError(
                     f"services.{name}.source is unsupported with install_path"
                 )
-            is_http = raw_source.startswith(("http://", "https://"))
-            if "://" in raw_source and not is_http:
-                raise ManifestError(
-                    f"services.{name}.source supports only http(s) URLs and local paths"
-                )
-            if not is_http:
-                # Relative local sources are relative to stack.yaml, not the working dir.
-                raw_source = str(
-                    (manifest_path.resolve().parent / raw_source).resolve()
-                    if not Path(raw_source).is_absolute()
-                    else Path(raw_source).resolve()
-                ) + ("/" if raw_source.endswith("/") else "")
-            resolve_source(name, version, raw_source)
-            source = raw_source
+            source = normalize_service_source(spec["source"], base, global_source)
+            resolve_source(name, version, source)
 
         if "enabled" in spec:
             if "state" in spec or "autostart" in spec:
@@ -179,4 +178,7 @@ def load_manifest(path: str | Path) -> StackManifest:
                 f"service_name: {definition.service_name}"
             )
 
-    return StackManifest(schema=schema, platform_root=platform_root, services=services)
+    return StackManifest(
+        schema=schema, platform_root=platform_root, services=services,
+        project_directory=base, global_source=global_source,
+    )
