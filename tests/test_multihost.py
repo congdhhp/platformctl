@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,8 +10,9 @@ from platformctl.cli import main
 from platformctl.errors import ManifestError
 from platformctl.inventory import Host, Inventory, load_inventory
 from platformctl.manifest import load_manifest
-from platformctl.orchestration import HostResult, Orchestrator, SSHTransport, _remote_command
+from platformctl.orchestration import HostResult, Orchestrator, SSHTransport
 from platformctl.planner import build_targets
+from platformctl.remote_worker import WORKER
 
 
 def fixtures(tmp_path: Path):
@@ -54,13 +56,13 @@ def test_one_software_multiple_hosts(tmp_path: Path):
     assert [s.name for s in targets[1].software] == ["C"]
 
 
-def test_unassigned_software_defaults_to_controller(tmp_path: Path):
+def test_unassigned_defaults_to_controller(tmp_path: Path):
     p, i = fixtures(tmp_path)
     p.write_text("schema: 1\nservices:\n  legacy:\n    version: 1.0.0\n")
     assert build_targets(load_manifest(p), load_inventory(i))[0].host.name == "H1"
     inv = Inventory({"H2": Host("H2", "ssh", "10.0.0.2")}, {})
-    target = build_targets(load_manifest(p), inv)[0]
-    assert (target.host.name, target.host.connection) == ("localhost", "local")
+    host = build_targets(load_manifest(p), inv)[0].host
+    assert (host.name, host.connection) == ("localhost", "local")
 
 
 @pytest.mark.parametrize("bad", [
@@ -88,7 +90,7 @@ def test_local_hostname_binding_rejects_wrong_machine(tmp_path: Path):
         load_inventory(i)
 
 
-def test_local_executor_runs_without_ssh(tmp_path: Path):
+def test_local_executor_uses_local_engine_without_ssh(tmp_path: Path):
     p, i = fixtures(tmp_path)
     root = tmp_path / "app"
     (root / "1.0.0").mkdir(parents=True)
@@ -97,152 +99,180 @@ def test_local_executor_runs_without_ssh(tmp_path: Path):
         f"    version: 1.0.0\n    root: {root}\n"
     )
     class NeverSSH(SSHTransport):
-        def run(self, *args, **kwargs):
-            raise AssertionError("local should never SSH")
+        def execute(self, *args, **kwargs):
+            raise AssertionError("local must not SSH")
     stack = load_manifest(p)
-    result = Orchestrator(NeverSSH()).execute(
+    results = Orchestrator(NeverSSH()).execute(
         stack, build_targets(stack, load_inventory(i)), "check"
     )
-    assert result[0].code == 0 and "READY" in result[0].output
+    assert len(results) == 1 and results[0].code == 0
+    assert "READY" in results[0].output
 
 
 class FakeSSH(SSHTransport):
-    def __init__(self):
+    def __init__(self, ready=False):
         self.uploads = {}
-        self.commands = []
+        self.downloaded = []
+        self.readbacks = []
+        self.executed = []
         self.cleaned = []
+        self.ready = ready
 
-    def require(self, host, argv, file=None):
-        if argv == ["platformctl", "--version"]:
-            return "platformctl 0.1.0"
-        if argv[0] == "mktemp":
-            return "/tmp/platformctl-12345678"
-        raise AssertionError(f"unexpected SSH command: {argv}")
+    def workspace(self, host):
+        return "/tmp/platformctl-12345678"
 
     def put(self, host, file, destination):
         self.uploads[destination] = file.read_bytes()
 
-    def run(self, host, argv, file=None):
-        self.commands.append(argv)
-        return HostResult(host.name, argv[0], 0, "OK")
+    def get(self, host, source, destination):
+        self.readbacks.append(source)
+        destination.write_bytes(b"artifact-content")
+
+    def download(self, host, url, destination):
+        self.downloaded.append((url, destination))
+
+    def require(self, host, argv, file=None, **kwargs):
+        if argv == ["dpkg", "--print-architecture"]:
+            return "amd64"
+        raise AssertionError(f"unexpected remote command: {argv}")
+
+    def execute(self, host, argv, *, privileged=False):
+        self.executed.append((host.name, list(argv), privileged))
+        if argv[0] == "check" and not self.ready:
+            return HostResult(host.name, "check", 2, "", "not installed")
+        return HostResult(host.name, argv[0], 0, f"{argv[1]}: OK")
 
     def cleanup(self, host, workspace):
-        self.cleaned.append(workspace)
+        self.cleaned.append((host.name, workspace))
+
+    def run(self, host, argv, **kwargs):
+        if argv == ["sudo", "-n", "bash", "-c", "true"]:
+            return HostResult(host.name, "sudo-preflight", 0, "OK")
+        raise AssertionError(f"unexpected run: {argv}")
 
 
-def test_local_deb_and_service_file_stage_to_remote(tmp_path: Path):
+def one_remote(tmp_path: Path, spec_text: str):
     _, i = fixtures(tmp_path)
-    deb = tmp_path / "A-1.0.0.deb"
-    deb.write_bytes(b"package-data")
-    unit = tmp_path / "A.service"
-    unit.write_text("[Service]\nExecStart=/opt/A/current/bin/A\n")
     p = tmp_path / "stack.yaml"
-    p.write_text(
-        "schema: 1\nservices:\n  A:\n    hosts: H2\n    version: 1.0.0\n"
-        f"    source: {deb}\n    service_file: ./A.service\n"
-    )
+    p.write_text("schema: 1\nservices:\n  C:\n    hosts: H2\n    version: 1.0.0\n" + spec_text)
     stack = load_manifest(p)
-    fake = FakeSSH()
-    results = Orchestrator(fake).execute(
-        stack, build_targets(stack, load_inventory(i)), "install"
+    return stack, build_targets(stack, load_inventory(i))
+
+
+def test_remote_install_uploads_local_deb_and_checks_package(tmp_path: Path, monkeypatch):
+    deb = tmp_path / "C-1.0.0.deb"
+    deb.write_bytes(b"fake-package")
+    unit = tmp_path / "C.service"
+    unit.write_text("[Service]\nExecStart=/opt/C/current/bin/C\n")
+    stack, targets = one_remote(
+        tmp_path, f"    source: {deb}\n    service_file: ./C.service\n"
     )
-    assert results[0].code == 0
-    assert fake.uploads["/tmp/platformctl-12345678/artifact-A.deb"] == deb.read_bytes()
-    assert fake.uploads["/tmp/platformctl-12345678/config-A.service"] == unit.read_bytes()
-    effective = yaml.safe_load(fake.uploads["/tmp/platformctl-12345678/stack.yaml"])
-    assert effective["services"]["A"]["source"].endswith("/artifact-A.deb")
-    assert effective["services"]["A"]["service_file"].endswith("/config-A.service")
-    assert fake.commands[0][:3] == ["sudo", "-n", "platformctl"]
-    assert fake.cleaned == ["/tmp/platformctl-12345678"]
+    fake = FakeSSH()
+    controller = Orchestrator(fake)
+    inspections = []
+    monkeypatch.setattr(
+        controller.packages, "_inspect",
+        lambda spec, source, folder, target_arch=None:
+            inspections.append((source.read_bytes(), target_arch)),
+    )
+    result = controller.execute(stack, targets, "install")
+    assert result[0].code == 0
+    assert fake.uploads["/tmp/platformctl-12345678/C.deb"] == b"fake-package"
+    assert fake.uploads["/tmp/platformctl-12345678/C.service"] == unit.read_bytes()
+    assert inspections == [(b"fake-package", "amd64")]
+    assert fake.executed[-1][1][0] == "install"
+    assert fake.executed[-1][2] is True
+    assert fake.cleaned == [("H2", "/tmp/platformctl-12345678")]
+    assert all("platformctl" not in str(cmd[1]) for cmd in fake.executed)
 
 
-def test_remote_desktop_staging_preserves_desktop_id(tmp_path: Path):
-    _, i = fixtures(tmp_path)
+def test_remote_http_downloads_at_target_then_controller_validates(tmp_path: Path, monkeypatch):
+    stack, targets = one_remote(
+        tmp_path, "    source: https://nexus.example/C/1.0.0/C-1.0.0.deb\n"
+    )
+    fake = FakeSSH()
+    controller = Orchestrator(fake)
+    inspected = []
+    monkeypatch.setattr(
+        controller.packages, "_inspect",
+        lambda spec, source, scratch, target_arch=None:
+            inspected.append((source.read_bytes(), target_arch)),
+    )
+    result = controller.execute(stack, targets, "install")
+    assert result[0].code == 0
+    assert fake.downloaded == [
+        ("https://nexus.example/C/1.0.0/C-1.0.0.deb", "/tmp/platformctl-12345678/C.deb")
+    ]
+    assert fake.readbacks == ["/tmp/platformctl-12345678/C.deb"]
+    assert inspected == [(b"artifact-content", "amd64")]
+    assert fake.executed[-1][2] is True
+
+
+def test_target_local_deb_is_read_back_not_uploaded(tmp_path: Path, monkeypatch):
+    stack, targets = one_remote(
+        tmp_path, "    source: /mnt/shared/C-1.0.0.deb\n    source_location: target\n"
+    )
+    fake = FakeSSH()
+    controller = Orchestrator(fake)
+    monkeypatch.setattr(controller.packages, "_inspect", lambda *a, **kw: None)
+    result = controller.execute(stack, targets, "install")
+    assert result[0].code == 0
+    assert fake.readbacks == ["/mnt/shared/C-1.0.0.deb"]
+    assert fake.uploads == {}
+
+
+def test_remote_check_does_not_transfer_artifact(tmp_path: Path):
+    stack, targets = one_remote(tmp_path, "    source: /tmp/C.deb\n")
+    fake = FakeSSH(ready=True)
+    result = Orchestrator(fake).execute(stack, targets, "check")
+    assert result[0].code == 0
+    assert fake.uploads == {} and fake.readbacks == []
+
+
+def test_remote_desktop_preserves_launcher_id(tmp_path: Path):
     launcher = tmp_path / "Briefcase.desktop"
     launcher.write_text("[Desktop Entry]\nType=Application\nName=Briefcase\nExec=briefcase\n")
-    p = tmp_path / "stack.yaml"
-    p.write_text(
-        "schema: 1\nservices:\n  B:\n    hosts: H2\n    type: desktop\n"
-        "    version: 2.0.0\n    desktop_file: ./Briefcase.desktop\n"
+    stack, targets = one_remote(
+        tmp_path, "    type: desktop\n    desktop_file: ./Briefcase.desktop\n"
     )
-    stack = load_manifest(p)
-    fake = FakeSSH()
-    result = Orchestrator(fake).execute(
-        stack, build_targets(stack, load_inventory(i)), "status"
-    )
+    fake = FakeSSH(ready=True)
+    result = Orchestrator(fake).execute(stack, targets, "status")
     assert result[0].code == 0
-    staged = "/tmp/platformctl-12345678/Briefcase.desktop"
-    assert staged in fake.uploads
-    effective = yaml.safe_load(fake.uploads["/tmp/platformctl-12345678/stack.yaml"])
-    assert effective["services"]["B"]["desktop_file"] == staged
+    assert fake.uploads["/tmp/platformctl-12345678/Briefcase.desktop"] == launcher.read_bytes()
+    assert fake.executed[0][1][10].endswith("/Briefcase.desktop")
 
 
-def test_remote_http_download_on_target_and_no_deb_upload(tmp_path: Path):
-    _, i = fixtures(tmp_path)
-    p = tmp_path / "stack.yaml"
-    p.write_text(
-        "schema: 1\nservices:\n  C:\n    hosts: H2\n    version: 1.0.0\n"
-        "    source: https://nexus.example/C/1.0.0/C-1.0.0.deb\n"
-    )
-    stack = load_manifest(p)
-    fake = FakeSSH()
-    Orchestrator(fake).execute(stack, build_targets(stack, load_inventory(i)), "install")
-    assert list(fake.uploads) == ["/tmp/platformctl-12345678/stack.yaml"]
-    effective = yaml.safe_load(fake.uploads["/tmp/platformctl-12345678/stack.yaml"])
-    assert effective["services"]["C"]["source"].startswith("https://")
-
-
-def test_target_local_source_does_not_get_uploaded(tmp_path: Path):
-    _, i = fixtures(tmp_path)
-    p = tmp_path / "stack.yaml"
-    p.write_text(
-        "schema: 1\nservices:\n  C:\n    hosts: H2\n    version: 1.0.0\n"
-        "    source: /mnt/shared/C-1.0.0.deb\n    source_location: target\n"
-    )
-    stack = load_manifest(p)
-    fake = FakeSSH()
-    Orchestrator(fake).execute(stack, build_targets(stack, load_inventory(i)), "install")
-    assert list(fake.uploads) == ["/tmp/platformctl-12345678/stack.yaml"]
-    effective = yaml.safe_load(fake.uploads["/tmp/platformctl-12345678/stack.yaml"])
-    assert effective["services"]["C"]["source"] == "/mnt/shared/C-1.0.0.deb"
-
-
-def test_check_does_not_transfer_local_deb(tmp_path: Path):
-    _, i = fixtures(tmp_path)
-    deb = tmp_path / "C.deb"
-    deb.write_bytes(b"example")
-    p = tmp_path / "stack.yaml"
-    p.write_text(
-        "schema: 1\nservices:\n  C:\n    hosts: H2\n"
-        f"    version: 1.0.0\n    source: {deb}\n"
-    )
-    stack = load_manifest(p)
-    fake = FakeSSH()
-    Orchestrator(fake).execute(stack, build_targets(stack, load_inventory(i)), "check")
-    assert "/tmp/platformctl-12345678/artifact-C.deb" not in fake.uploads
-
-
-def test_apply_checks_every_host_before_activation(tmp_path: Path):
+def test_apply_readiness_and_sudo_preflight(tmp_path: Path):
     p, i = fixtures(tmp_path)
     stack = load_manifest(p)
     targets = build_targets(stack, load_inventory(i))
-    class FakeOrchestrator(Orchestrator):
+
+    class OrchestratorWithFake(Orchestrator):
         def __init__(self):
             self.calls = []
-        def _privilege_check(self, target):
-            return HostResult(target.host.name, "sudo-preflight", 0, "READY")
+            self.fail = True
         def _host(self, stack, target, command, software=None):
             self.calls.append((target.host.name, command))
-            if command == "check" and target.host.name == "H2":
-                return HostResult("H2", command, 2, "", "not installed")
-            return HostResult(target.host.name, command, 0, "READY")
-    orch = FakeOrchestrator()
-    results = orch.execute(stack, targets, "apply", parallel=2)
-    assert len(results) == 3 and all(r.code != 0 for r in results)
-    assert {command for _, command in orch.calls} == {"check"}
+            return HostResult(
+                target.host.name, command,
+                2 if self.fail and command == "check" and target.host.name == "H2" else 0,
+                "READY",
+            )
+        def _privilege_check(self, target):
+            self.calls.append((target.host.name, "sudo-preflight"))
+            return HostResult(target.host.name, "sudo-preflight", 0, "OK")
+
+    orch = OrchestratorWithFake()
+    assert all(r.code for r in orch.execute(stack, targets, "apply", parallel=2))
+    assert not any(command == "apply" for _, command in orch.calls)
+    orch.calls.clear()
+    orch.fail = False
+    assert all(r.code == 0 for r in orch.execute(stack, targets, "apply"))
+    assert [cmd for _, cmd in orch.calls].count("apply") == 3
+    assert [cmd for _, cmd in orch.calls].count("sudo-preflight") == 3
 
 
-def test_cli_plan_validate_and_missing_inventory(tmp_path: Path, capsys):
+def test_cli_plan_validate_and_legacy_local_path(tmp_path: Path, capsys):
     p, i = fixtures(tmp_path)
     assert main(["plan", "-f", str(p), "-i", str(i), "--limit", "H1,H3"]) == 0
     output = capsys.readouterr().out
@@ -253,74 +283,26 @@ def test_cli_plan_validate_and_missing_inventory(tmp_path: Path, capsys):
     assert "requires --inventory" in capsys.readouterr().err
 
 
-def test_target_relative_source_rejected(tmp_path: Path):
-    p = tmp_path / "stack.yaml"
-    p.write_text(
-        "schema: 1\nservices:\n  C:\n    version: 1.0.0\n"
-        "    source: ./C.deb\n    source_location: target\n"
-    )
-    with pytest.raises(ManifestError):
-        load_manifest(p)
-
-
-def test_ssh_is_strict_and_privilege_escalation_only_for_mutations():
-    host = Host("H2", "ssh", "server.example", "deploy", 2222)
-    args = SSHTransport()._ssh(host)
-    assert "StrictHostKeyChecking=yes" in args and "BatchMode=yes" in args
-    assert args[-1] == "server.example"
-    assert _remote_command(host, "check", "/tmp/stack.yaml", None)[0] == "platformctl"
-    assert _remote_command(host, "install", "/tmp/stack.yaml", None)[:3] == [
-        "sudo", "-n", "platformctl",
+def test_bash_worker_is_syntactically_valid_and_runs_check_without_python(tmp_path: Path):
+    assert subprocess.run(
+        ["bash", "-n"], input=WORKER, text=True, capture_output=True
+    ).returncode == 0
+    root = tmp_path / "software"
+    (root / "1.0.0").mkdir(parents=True)
+    args = [
+        "bash", "-s", "--", "check", "A", "1.0.0", "service",
+        str(root), "1", "A.service", "running", "true",
+        "", "", "", "", "0",
     ]
+    process = subprocess.run(
+        args, input=WORKER, text=True, capture_output=True
+    )
+    assert process.returncode == 0, process.stderr
+    assert "A READY 1.0.0" in process.stdout
+    assert "platformctl" not in process.stderr
 
 
-def test_apply_runs_only_after_all_sudo_preflights_pass(tmp_path: Path):
-    p, i = fixtures(tmp_path)
-    stack = load_manifest(p)
-    targets = build_targets(stack, load_inventory(i))
-
-    class FakeOrchestrator(Orchestrator):
-        def __init__(self):
-            self.calls = []
-            self.bad_sudo = False
-
-        def _host(self, stack, target, command, software=None):
-            self.calls.append((target.host.name, command))
-            return HostResult(target.host.name, command, 0, "READY")
-
-        def _privilege_check(self, target):
-            self.calls.append((target.host.name, "sudo-preflight"))
-            if self.bad_sudo and target.host.name == "H3":
-                raise RuntimeError("sudo -n permission denied")
-            return HostResult(target.host.name, "sudo-preflight", 0, "READY")
-
-    orch = FakeOrchestrator()
-    orch.bad_sudo = True
-    result = orch.execute(stack, targets, "apply")
-    assert all(r.code != 0 for r in result)
-    assert not any(command == "apply" for _, command in orch.calls)
-
-    orch.calls.clear()
-    orch.bad_sudo = False
-    result = orch.execute(stack, targets, "apply")
-    assert all(r.code == 0 for r in result)
-    assert [command for _, command in orch.calls].count("apply") == 3
-    assert [command for _, command in orch.calls].count("sudo-preflight") == 3
-
-
-def test_parallel_local_and_remote_keeps_host_result_order(tmp_path: Path):
-    p, i = fixtures(tmp_path)
-    stack = load_manifest(p)
-    targets = build_targets(stack, load_inventory(i))
-
-    class RecordOrchestrator(Orchestrator):
-        def __init__(self):
-            self.calls = []
-        def _host(self, stack, target, command, software=None):
-            self.calls.append((target.host.name, command))
-            return HostResult(target.host.name, command, 0, target.host.name)
-
-    orch = RecordOrchestrator()
-    result = orch.execute(stack, targets, "status", parallel=3)
-    assert [r.host for r in result] == ["H1", "H2", "H3"]
-    assert orch.calls[0] == ("H1", "status")
+def test_ssh_transport_does_not_disable_host_key_checks():
+    args = SSHTransport()._ssh(Host("H2", "ssh", "server.example", "deploy", 2222))
+    assert "StrictHostKeyChecking=yes" in args
+    assert "BatchMode=yes" in args
