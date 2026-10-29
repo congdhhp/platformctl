@@ -301,5 +301,15 @@ class Orchestrator:
 
         if parallel == 1:
             return [run(t) for t in targets]
+        # redirect_stdout/redirect_stderr in the in-process LocalExecutor are
+        # process-global, not thread-local. Execute the controller host first,
+        # then fan out SSH workers, preserving original inventory order.
+        completed: dict[str, HostResult] = {}
+        for target in targets:
+            if target.host.connection == "local":
+                completed[target.host.name] = run(target)
+        remote = [target for target in targets if target.host.connection == "ssh"]
         with ThreadPoolExecutor(max_workers=parallel) as pool:
-            return list(pool.map(run, targets))
+            results = list(pool.map(run, remote))
+        completed.update((result.host, result) for result in results)
+        return [completed[target.host.name] for target in targets]
