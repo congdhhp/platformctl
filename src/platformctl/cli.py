@@ -4,6 +4,9 @@ import argparse
 import sys
 
 from . import __version__
+from .inventory import load_inventory
+from .planner import build_targets
+from .orchestration import Orchestrator
 from .artifacts import artifact_for
 from .engine import Engine
 from .errors import PlatformCtlError
@@ -33,6 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Manage native Linux service and desktop application releases",
     )
     parser.add_argument("--version", action="version", version=f"platformctl {__version__}")
+    parser.add_argument("-i", "--inventory", default=None, help="optional multi-host inventory")
+    parser.add_argument("--limit", default=None, help="select hosts or groups, comma separated")
+    parser.add_argument("--parallel", type=int, default=1, help="concurrent hosts (1..32)")
     parser.add_argument(
         "--project-directory", default=None,
         help="base for relative local paths (default: directory containing stack.yaml)",
@@ -50,6 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
             "--project-directory", default=argparse.SUPPRESS,
             help="base for relative local paths (default: directory containing stack.yaml)",
         )
+        # Allow the same controller options before or after each subcommand.
+        p.add_argument("-i", "--inventory", default=argparse.SUPPRESS,
+                       help="optional multi-host inventory")
+        p.add_argument("--limit", default=argparse.SUPPRESS,
+                       help="select hosts or groups, comma separated")
+        p.add_argument("--parallel", type=int, default=argparse.SUPPRESS,
+                       help="concurrent hosts (1..32)")
         return p
 
     validate = with_file("validate", "validate manifest configuration without requiring releases")
@@ -57,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-sources", action="store_true",
         help="show resolved artifact locations without downloading them",
     )
+    with_file("plan", "show host placements and artifact transfer plan (no SSH)")
     with_file("install", "download and install missing .deb releases without activation")
     with_file("check", "read-only readiness check for desired installed releases")
     with_file("status", "show desired/current versions and runtime/launcher state")
@@ -75,6 +89,74 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         manifest = _manifest(args)
+        if args.parallel < 1 or args.parallel > 32:
+            raise PlatformCtlError("--parallel must be between 1 and 32")
+
+        if args.inventory is not None:
+            inventory = load_inventory(args.inventory)
+            targets = build_targets(manifest, inventory, args.limit)
+            if args.command == "validate":
+                # Configuration validation does not require network connectivity.
+                Engine().validate(manifest)
+                if args.show_sources:
+                    for target in targets:
+                        for spec in target.software:
+                            source = artifact_for(spec).location if spec.source else "(pre-installed)"
+                            print(f"{target.host.name} {spec.name}: {source}")
+                print(f"OK: {len(targets)} host(s), "
+                      f"{sum(len(t.software) for t in targets)} placement(s)")
+                return 0
+            if args.command == "plan":
+                print(f"{'HOST':20} {'CONNECTION':11} {'SOFTWARE':20} {'ARTIFACT DELIVERY'}")
+                for target in targets:
+                    for spec in target.software:
+                        if spec.source is None:
+                            delivery = "pre-installed"
+                        else:
+                            artifact = artifact_for(spec)
+                            at = spec.source_location or (
+                                "target" if artifact.remote else "controller"
+                            )
+                            if target.host.connection == "local":
+                                delivery = "local acquisition"
+                            elif at == "controller":
+                                delivery = "download + SSH push" if artifact.remote else "SSH push"
+                            else:
+                                delivery = "target download" if artifact.remote else "target-local"
+                        print(f"{target.host.name:20} {target.host.connection:11} "
+                              f"{spec.name:20} {delivery}")
+                return 0
+            filtered = []
+            for target in targets:
+                selected = tuple(
+                    s for s in target.software
+                    if args.command not in {"rollback", "list-releases"} or s.name == args.service
+                )
+                if selected:
+                    from .planner import Target
+                    filtered.append(Target(target.host, selected))
+            if not filtered:
+                raise PlatformCtlError("software not found on selected host(s)")
+            results = Orchestrator().execute(
+                manifest, tuple(filtered), args.command,
+                software=args.service if args.command in {"rollback", "list-releases"} else None,
+                parallel=args.parallel,
+            )
+            for result in results:
+                print(f"[{result.host}] {result.command}: "
+                      f"{'OK' if result.code == 0 else 'FAILED'}")
+                if result.output.strip():
+                    print(result.output.rstrip())
+                if result.error.strip():
+                    print(result.error.rstrip(), file=sys.stderr)
+            return 2 if any(r.code for r in results) else 0
+
+        if args.limit is not None:
+            raise PlatformCtlError("--limit requires --inventory")
+        if args.command == "plan":
+            raise PlatformCtlError("plan requires --inventory")
+        if any(spec.hosts is not None for spec in manifest.services.values()):
+            raise PlatformCtlError("services.*.hosts requires --inventory")
         engine = Engine()
 
         if args.command == "validate":
