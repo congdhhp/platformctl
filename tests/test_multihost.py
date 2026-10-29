@@ -306,3 +306,58 @@ def test_ssh_transport_does_not_disable_host_key_checks():
     args = SSHTransport()._ssh(Host("H2", "ssh", "server.example", "deploy", 2222))
     assert "StrictHostKeyChecking=yes" in args
     assert "BatchMode=yes" in args
+
+
+def test_bash_worker_real_release_activation_and_rollback(tmp_path: Path):
+    """Exercise symlink switch and rollback without SSH, sudo or systemd host."""
+    root = tmp_path / "software"
+    (root / "1.0.0").mkdir(parents=True)
+    (root / "2.0.0").mkdir()
+    (root / "current").symlink_to(root / "1.0.0")
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    systemctl = fakebin / "systemctl"
+    systemctl.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "  is-active) exit 1 ;;\n"
+        "  is-enabled) exit 1 ;;\n"
+        "  start|stop|enable|disable|daemon-reload) exit 0 ;;\n"
+        "  *) exit 8 ;;\n"
+        "esac\n"
+    )
+    systemctl.chmod(0o755)
+    import os
+    env = {**os.environ, "PATH": str(fakebin) + ":" + os.environ["PATH"]}
+    base = ["A", "2.0.0", "service", str(root), "1",
+            "A.service", "stopped", "false", "", "", "", "", "0"]
+
+    def run(action: str):
+        return subprocess.run(
+            ["bash", "-s", "--", action, *base],
+            input=WORKER, text=True, capture_output=True, env=env,
+        )
+
+    applied = run("apply")
+    assert applied.returncode == 0, applied.stderr
+    assert (root / "current").resolve() == root / "2.0.0"
+    assert (root / "previous").resolve() == root / "1.0.0"
+
+    rolled_back = run("rollback")
+    assert rolled_back.returncode == 0, rolled_back.stderr
+    assert (root / "current").resolve() == root / "1.0.0"
+    assert (root / "previous").resolve() == root / "2.0.0"
+
+
+def test_bash_worker_rejects_unmanaged_current_link(tmp_path: Path):
+    root = tmp_path / "software"
+    (root / "1.0.0").mkdir(parents=True)
+    (root / "current").write_text("not a symlink")
+    argv = [
+        "bash", "-s", "--", "check", "A", "1.0.0", "service",
+        str(root), "1", "A.service", "stopped", "false",
+        "", "", "", "", "0",
+    ]
+    result = subprocess.run(argv, input=WORKER, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert "not a symlink" in result.stderr
