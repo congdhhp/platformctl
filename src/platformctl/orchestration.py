@@ -91,7 +91,7 @@ class SSHTransport:
         return remote
 
     def put(self, host: Host, file: Path, destination: str) -> None:
-        if not file.is_file() or not file.is_file():
+        if not file.is_file():
             raise OrchestrationError(f"controller file not found: {file}")
         # The SSH user creates private files in a mode 0700 mktemp directory.
         self.require(host, ["sh", "-c", f"umask 077; cat > {shlex.quote(destination)}"], file)
@@ -228,7 +228,13 @@ class Orchestrator:
                     if spec.service_file or spec.desktop_file:
                         source = spec.service_file or spec.desktop_file
                         assert source is not None
-                        destination = f"{workspace}/config-{spec.name}{source.suffix}"
+                        # DesktopFileManager installs based on source filename:
+                        # preserve the XDG desktop ID rather than staging under
+                        # a generated name.
+                        if spec.type == "desktop":
+                            destination = f"{workspace}/{source.name}"
+                        else:
+                            destination = f"{workspace}/config-{spec.name}{source.suffix}"
                         self.transport.put(host, source, destination)
                         file_overrides[spec.name] = destination
                     if spec.source is None:
