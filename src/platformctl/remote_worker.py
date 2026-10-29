@@ -190,7 +190,7 @@ case "$action" in
       old_enabled="$(systemctl is-enabled --quiet "$unit" && printf 1 || printf 0)"
       target_change=0
       if [[ -n "$unit_file" && "$(file_state "$unit_file" "$installed_unit")" != registered ]]; then
-        target_change=1; file_target="$installed_unit"
+        target_change=1
       fi
       needs_restart=0
       [[ "$managed" == 1 && "$(linked "$current")" != "$wanted" ]] && needs_restart=1
@@ -205,6 +205,7 @@ case "$action" in
           backup="$(mktemp /etc/systemd/system/.platformctl-backup-XXXXXXXX)"
           cp -p -- "$installed_unit" "$backup"
         fi
+        file_target="$installed_unit"
         atomic_copy "$unit_file" "$installed_unit"
         systemctl daemon-reload
       fi
@@ -223,7 +224,7 @@ case "$action" in
       [[ -n "$desktop_file" ]] || die "desktop_file required"
       target_change=0
       if [[ "$(file_state "$desktop_file" "$launcher")" != registered ]]; then
-        target_change=1; file_target="$launcher"
+        target_change=1
       fi
       modified=1
       trap restore_on_exit EXIT
@@ -234,6 +235,7 @@ case "$action" in
           backup="$(mktemp /usr/local/share/applications/.platformctl-backup-XXXXXXXX)"
           cp -p -- "$launcher" "$backup"
         fi
+        file_target="$launcher"
         atomic_copy "$desktop_file" "$launcher"
       fi
     fi
