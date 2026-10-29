@@ -146,7 +146,7 @@ class FakeSSH(SSHTransport):
         self.cleaned.append((host.name, workspace))
 
     def run(self, host, argv, **kwargs):
-        if argv == ["sudo", "-n", "bash", "-c", "true"]:
+        if argv == ["sudo", "-n", "bash", "-s", "--"]:
             return HostResult(host.name, "sudo-preflight", 0, "OK")
         raise AssertionError(f"unexpected run: {argv}")
 
