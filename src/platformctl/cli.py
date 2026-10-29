@@ -17,19 +17,20 @@ def _manifest(args: argparse.Namespace):
 
 
 def _print_status(rows) -> None:
-    print(f"{'SERVICE':20} {'DESIRED':24} {'CURRENT':24} {'MODE':9} {'STATE':10} {'AUTOSTART':9}")
+    print(f"{'SOFTWARE':20} {'TYPE':9} {'DESIRED':24} {'CURRENT':24} {'MODE':9} {'STATE':12} {'AUTOSTART':9}")
     for row in rows:
         print(
-            f"{row.name:20} {row.desired:24} "
+            f"{row.name:20} {row.type:9} {row.desired:24} "
             f"{(row.current or ('unknown' if row.mode == 'external' else '-')):24} "
-            f"{row.mode:9} {row.state:10} {('yes' if row.enabled else 'no'):9}"
+            f"{row.mode:9} {row.state:12} "
+            f"{('-' if row.enabled is None else 'yes' if row.enabled else 'no'):9}"
         )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="platformctl",
-        description="Manage native Linux service releases",
+        description="Manage native Linux service and desktop application releases",
     )
     parser.add_argument("--version", action="version", version=f"platformctl {__version__}")
     parser.add_argument(
@@ -58,9 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     with_file("install", "download and install missing .deb releases without activation")
     with_file("check", "read-only readiness check for desired installed releases")
-    with_file("status", "show desired/current versions and systemd state")
+    with_file("status", "show desired/current versions and runtime/launcher state")
     with_file("diff", "show services whose desired version differs from current")
-    with_file("apply", "activate desired versions and reconcile systemd state")
+    with_file("apply", "activate desired releases and reconcile systemd/desktop integration")
 
     rollback = with_file("rollback", "rollback one service to its previous release")
     rollback.add_argument("service", help="service name from the manifest")
@@ -117,7 +118,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "diff":
             changed = False
             for spec in manifest.services.values():
-                if engine.unit_files.prepare(spec) is not None:
+                if spec.type == "desktop":
+                    if engine.desktop_files.prepare(spec) is not None:
+                        changed = True
+                        print(
+                            f"{spec.name}: desktop launcher "
+                            f"{spec.desktop_file.name} will be updated"
+                        )
+                elif engine.unit_files.prepare(spec) is not None:
                     changed = True
                     print(f"{spec.name}: systemd unit {spec.service_name} will be updated")
                 if not spec.managed:
@@ -138,11 +146,19 @@ def main(argv: list[str] | None = None) -> int:
             engine.validate(manifest)
             pending_units = {
                 name for name, spec in manifest.services.items()
-                if engine.unit_files.prepare(spec) is not None
+                if spec.type == "service" and engine.unit_files.prepare(spec) is not None
+            }
+            pending_desktops = {
+                name for name, spec in manifest.services.items()
+                if spec.type == "desktop" and engine.desktop_files.prepare(spec) is not None
             }
             for name, old, new in engine.apply(manifest):
                 spec = manifest.services[name]
-                suffix = ", systemd unit updated" if name in pending_units else ""
+                suffix = (
+                    ", systemd unit updated" if name in pending_units
+                    else ", desktop launcher updated" if name in pending_desktops
+                    else ""
+                )
                 if not spec.managed:
                     print(
                         f"{name}: external at {spec.install_path} "

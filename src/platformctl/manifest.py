@@ -16,7 +16,7 @@ _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+~-]*$")
 _SERVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:+-]*[.]service$")
 _TOP_LEVEL_KEYS = {"schema", "platform", "services"}
 _PLATFORM_KEYS = {"root", "source"}
-_SERVICE_KEYS = {"version", "source", "service_name", "service_file", "root", "install_path", "state", "autostart", "enabled"}
+_SERVICE_KEYS = {"version", "source", "service_name", "service_file", "root", "install_path", "state", "autostart", "enabled", "type", "desktop_file"}
 
 
 def _mapping(value: Any, where: str) -> Mapping[str, Any]:
@@ -94,6 +94,38 @@ def load_manifest(
         spec = _mapping(raw_spec, f"services.{name}")
         _reject_unknown(spec, _SERVICE_KEYS, f"services.{name}")
 
+        software_type = spec.get("type", "service")
+        if software_type not in {"service", "desktop"} or not isinstance(
+            software_type, str
+        ):
+            raise ManifestError(
+                f"services.{name}.type must be 'service' or 'desktop'"
+            )
+        desktop_file = None
+        if software_type == "desktop":
+            forbidden = {"service_name", "service_file", "state", "autostart", "enabled", "install_path"}
+            invalid = sorted(forbidden.intersection(spec))
+            if invalid:
+                raise ManifestError(
+                    f"services.{name}: desktop applications do not support "
+                    + ", ".join(invalid)
+                )
+            desktop_value = spec.get("desktop_file")
+            if not isinstance(desktop_value, str) or not desktop_value.strip():
+                raise ManifestError(
+                    f"services.{name}.desktop_file is required for type: desktop"
+                )
+            candidate = Path(desktop_value)
+            if candidate.suffix != ".desktop" or candidate.name in {".desktop", "..desktop"}:
+                raise ManifestError(f"services.{name}.desktop_file must end in .desktop")
+            desktop_file = (
+                candidate if candidate.is_absolute() else base / candidate
+            ).resolve()
+        elif "desktop_file" in spec:
+            raise ManifestError(
+                f"services.{name}.desktop_file is only valid for type: desktop"
+            )
+
         version = spec.get("version")
         if not isinstance(version, str) or not _VERSION_RE.fullmatch(version):
             raise ManifestError(f"services.{name}.version is invalid: {version!r}")
@@ -163,6 +195,8 @@ def load_manifest(
             service_name=service_name,
             service_file=service_file,
             source=source,
+            type=software_type,
+            desktop_file=desktop_file,
             root=root,
             install_path=install_path,
             state=state,
@@ -170,13 +204,24 @@ def load_manifest(
         )
 
     unit_owners: dict[str, str] = {}
+    desktop_owners: dict[str, str] = {}
     for name, definition in services.items():
-        owner = unit_owners.setdefault(definition.service_name, name)
-        if owner != name:
-            raise ManifestError(
-                f"services.{name} and services.{owner} use the same "
-                f"service_name: {definition.service_name}"
-            )
+        if definition.type == "desktop":
+            assert definition.desktop_file is not None
+            desktop_id = definition.desktop_file.name
+            owner = desktop_owners.setdefault(desktop_id, name)
+            if owner != name:
+                raise ManifestError(
+                    f"services.{name} and services.{owner} use the same "
+                    f"desktop_file name: {desktop_id}"
+                )
+        else:
+            owner = unit_owners.setdefault(definition.service_name, name)
+            if owner != name:
+                raise ManifestError(
+                    f"services.{name} and services.{owner} use the same "
+                    f"service_name: {definition.service_name}"
+                )
 
     return StackManifest(
         schema=schema, platform_root=platform_root, services=services,

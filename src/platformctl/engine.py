@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .errors import ApplyError, ReleaseError
+from .desktop_files import DesktopFileManager
 from .models import ServiceSpec, StackManifest
 from .packages import PackageManager
 from .release import (
@@ -24,8 +25,9 @@ class ServiceStatus:
     desired: str
     current: str | None
     state: str
-    enabled: bool
+    enabled: bool | None
     mode: str = "managed"
+    type: str = "service"
 
 
 class Engine:
@@ -34,10 +36,12 @@ class Engine:
         systemd: Systemd | None = None,
         unit_files: UnitFileManager | None = None,
         packages: PackageManager | None = None,
+        desktop_files: DesktopFileManager | None = None,
     ) -> None:
         self.systemd = systemd or Systemd()
         self.unit_files = unit_files or UnitFileManager()
         self.packages = packages or PackageManager()
+        self.desktop_files = desktop_files or DesktopFileManager()
 
     def _validate_service(self, spec: ServiceSpec) -> None:
         if spec.managed:
@@ -52,12 +56,18 @@ class Engine:
                     )
         elif spec.install_path is None or not spec.install_path.is_dir():
             raise ReleaseError(f"installation directory not found: {spec.install_path}")
-        self.unit_files.prepare(spec)
+        if spec.type == "desktop":
+            self.desktop_files.prepare(spec)
+        else:
+            self.unit_files.prepare(spec)
 
     def validate(self, manifest: StackManifest) -> None:
         """Validate configuration without requiring desired releases on the host."""
         for spec in manifest.services.values():
-            self.unit_files.validate_source(spec)
+            if spec.type == "desktop":
+                self.desktop_files.validate_source(spec)
+            else:
+                self.unit_files.validate_source(spec)
 
     def check(self, manifest: StackManifest) -> None:
         """Check that desired releases exist before any systemd changes."""
@@ -67,19 +77,69 @@ class Engine:
     def status(self, manifest: StackManifest) -> list[ServiceStatus]:
         rows: list[ServiceStatus] = []
         for spec in manifest.services.values():
-            rows.append(
-                ServiceStatus(
-                    name=spec.name,
-                    desired=spec.version,
-                    current=current_version(spec),
-                    state="running" if self.systemd.is_active(spec.service_name) else "stopped",
-                    enabled=self.systemd.is_enabled(spec.service_name),
-                    mode="managed" if spec.managed else "external",
+            if spec.type == "desktop":
+                rows.append(
+                    ServiceStatus(
+                        name=spec.name,
+                        desired=spec.version,
+                        current=current_version(spec),
+                        state=self.desktop_files.status(spec),
+                        enabled=None,
+                        mode="managed" if spec.managed else "external",
+                        type="desktop",
+                    )
                 )
-            )
+            else:
+                rows.append(
+                    ServiceStatus(
+                        name=spec.name,
+                        desired=spec.version,
+                        current=current_version(spec),
+                        state="running" if self.systemd.is_active(spec.service_name) else "stopped",
+                        enabled=self.systemd.is_enabled(spec.service_name),
+                        mode="managed" if spec.managed else "external",
+                        type="service",
+                    )
+                )
         return rows
 
+    def _apply_desktop(self, spec: ServiceSpec) -> tuple[str | None, str]:
+        """Select release and register its launcher; do not touch a GUI session."""
+        self._validate_service(spec)
+        change = self.desktop_files.prepare(spec)
+        previous = current_version(spec)
+        links_before = snapshot_links(spec)
+        touched_links = False
+        touched_desktop = False
+        try:
+            touched_links = True
+            activate(spec)
+            if change is not None:
+                touched_desktop = True
+                self.desktop_files.install(change)
+            if self.desktop_files.status(spec) != "registered":
+                raise ApplyError(f"{spec.name}: desktop launcher was not registered")
+        except Exception as exc:
+            problems: list[str] = []
+            if touched_desktop and change is not None:
+                try:
+                    self.desktop_files.restore(change)
+                except Exception as restore_exc:
+                    problems.append(f"restore desktop launcher: {restore_exc}")
+            if touched_links:
+                try:
+                    restore_links(spec, links_before)
+                except Exception as restore_exc:
+                    problems.append(f"restore release links: {restore_exc}")
+            message = f"failed applying desktop {spec.name}: {exc}"
+            if problems:
+                message += "; rollback also failed: " + "; ".join(problems)
+            raise ApplyError(message) from exc
+        return previous, spec.version
+
     def apply_service(self, spec: ServiceSpec) -> tuple[str | None, str]:
+        if spec.type == "desktop":
+            return self._apply_desktop(spec)
         # Finish preflight before stopping or changing any running service.
         self._validate_service(spec)
         unit_change = self.unit_files.prepare(spec)
@@ -173,6 +233,10 @@ class Engine:
         if not spec.managed:
             raise ReleaseError(f"{spec.name} uses install_path; rollback is unavailable")
         validate_managed_links(spec)
+        if spec.type == "desktop":
+            # The launcher references <root>/current and is not rewritten on
+            # rollback. Existing GUI processes are intentionally left alone.
+            return rollback_link(spec)
         was_active = self.systemd.is_active(spec.service_name)
         if was_active:
             self.systemd.stop(spec.service_name)
